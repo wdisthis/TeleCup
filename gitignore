@@ -1,0 +1,53 @@
+# ===== Virtual environment =====
+.venv/
+venv/
+env/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ===== Telegram / Telethon (RAHASIA) =====
+*.session
+*.session-journal
+*.session.sqlite
+config/settings.json
+.env
+.env.*
+secrets.json
+
+# ===== Data lokal TeleCup =====
+storage/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ===== Build & packaging =====
+dist/
+build/
+*.spec
+*.exe
+
+# ===== Log =====
+*.log
+logs/
+
+# ===== IDE / editor =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+desktop.ini
