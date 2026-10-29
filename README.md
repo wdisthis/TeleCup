@@ -120,8 +120,6 @@ pip freeze > requirements.txt
 }
 ```
 
-> ⚠️ `config/settings.json` sudah masuk `.gitignore`. **Jangan pernah** membagikan `api_hash`, file `.session`, atau kode login/OTP kepada siapa pun.
-
 Saat pertama kali dijalankan, kamu akan diminta memasukkan nomor telepon dan kode login dari Telegram.
 
 ---
