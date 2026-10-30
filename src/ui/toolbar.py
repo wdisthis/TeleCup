@@ -25,28 +25,28 @@ class ToolbarWidget(QWidget):
 
     def _init_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setSpacing(12)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(10)
 
         # ── 1. Sync Button ──
-        self.sync_btn = QPushButton("🔄  Sync Telegram")
+        self.sync_btn = QPushButton("Sync Telegram")
         self.sync_btn.setCursor(Qt.PointingHandCursor)
         self.sync_btn.setStyleSheet(
             """
             QPushButton {
-                background-color: #1a73e8;
-                color: white;
-                font-weight: bold;
+                background-color: #2563eb;
+                color: #ffffff;
+                font-weight: 600;
                 border: none;
                 border-radius: 6px;
                 padding: 7px 16px;
                 font-size: 13px;
             }
             QPushButton:hover {
-                background-color: #1557b0;
+                background-color: #1d4ed8;
             }
             QPushButton:pressed {
-                background-color: #0d47a1;
+                background-color: #1e40af;
             }
             """
         )
@@ -55,20 +55,21 @@ class ToolbarWidget(QWidget):
 
         # ── 2. Search Box ──
         self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("🔍  Search files, captions, tags...")
+        self.search_input.setPlaceholderText("Search files, captions, tags...")
         self.search_input.setClearButtonEnabled(True)
         self.search_input.setStyleSheet(
             """
             QLineEdit {
-                border: 1px solid #dadce0;
-                border-radius: 8px;
-                padding: 6px 14px;
+                border: 1px solid #3f3f46;
+                border-radius: 6px;
+                padding: 6px 12px;
                 font-size: 13px;
-                background-color: #f1f3f4;
+                background-color: #27272a;
+                color: #f4f4f5;
             }
             QLineEdit:focus {
-                background-color: #ffffff;
-                border: 2px solid #1a73e8;
+                border: 1px solid #3b82f6;
+                background-color: #27272a;
             }
             """
         )
@@ -78,20 +79,32 @@ class ToolbarWidget(QWidget):
         # ── 3. Sort Options ──
         self.sort_combo = QComboBox()
         self.sort_combo.addItems([
-            "Sort by: Date (Newest)",
-            "Sort by: Date (Oldest)",
-            "Sort by: Name (A-Z)",
-            "Sort by: Size (Largest)",
+            "Sort: Date (Newest)",
+            "Sort: Date (Oldest)",
+            "Sort: Name (A-Z)",
+            "Sort: Size (Largest)",
         ])
         self.sort_combo.setStyleSheet(
             """
             QComboBox {
-                border: 1px solid #dadce0;
+                border: 1px solid #3f3f46;
                 border-radius: 6px;
-                padding: 5px 10px;
-                background: #ffffff;
+                padding: 6px 10px;
+                background-color: #27272a;
+                color: #e4e4e7;
                 font-size: 12px;
-                min-width: 150px;
+                min-width: 140px;
+            }
+            QComboBox:hover {
+                border-color: #52525b;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #18181b;
+                color: #e4e4e7;
+                selection-background-color: #3b82f6;
+                selection-color: #ffffff;
+                border: 1px solid #3f3f46;
+                outline: none;
             }
             """
         )
@@ -99,8 +112,8 @@ class ToolbarWidget(QWidget):
         layout.addWidget(self.sort_combo)
 
         # ── 4. View Mode (Grid vs List) ──
-        self.grid_btn = QPushButton("⊞ Grid")
-        self.list_btn = QPushButton("☰ List")
+        self.grid_btn = QPushButton("Grid")
+        self.list_btn = QPushButton("List")
 
         for btn in (self.grid_btn, self.list_btn):
             btn.setCheckable(True)
@@ -108,17 +121,23 @@ class ToolbarWidget(QWidget):
             btn.setStyleSheet(
                 """
                 QPushButton {
-                    border: 1px solid #dadce0;
-                    background: #ffffff;
-                    padding: 6px 12px;
-                    border-radius: 4px;
+                    border: 1px solid #3f3f46;
+                    background-color: #27272a;
+                    color: #a1a1aa;
+                    padding: 6px 14px;
+                    border-radius: 6px;
                     font-size: 12px;
+                    font-weight: 500;
+                }
+                QPushButton:hover {
+                    color: #ffffff;
+                    background-color: #3f3f46;
                 }
                 QPushButton:checked {
-                    background: #e8f0fe;
-                    color: #1a73e8;
-                    border-color: #1a73e8;
-                    font-weight: bold;
+                    background-color: #3b82f6;
+                    color: #ffffff;
+                    border-color: #3b82f6;
+                    font-weight: 600;
                 }
                 """
             )
@@ -142,4 +161,3 @@ class ToolbarWidget(QWidget):
             3: "size_desc",
         }
         self.sort_changed.emit(sort_map.get(index, "date_desc"))
-
