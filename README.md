@@ -1,82 +1,82 @@
 # TeleCup
 
-**Local-first desktop application** untuk mengubah Telegram *Saved Messages* menjadi pengelola arsip pribadi yang terasa seperti Google Drive.
+**Local-first desktop application** to turn Telegram *Saved Messages* into a personal archive manager that feels like Google Drive.
 
-Tidak perlu lagi menggulir chat panjang hanya untuk menemukan PDF, gambar, kode, dokumen, atau catatan yang pernah kamu simpan. TeleCup berjalan sepenuhnya di laptop kamu: tanpa server sendiri, tanpa VPS, tanpa Streamlit, dan tanpa layanan cloud wajib. Katalog, file hasil unduhan, dan konfigurasi semuanya disimpan secara lokal.
+No more scrolling through long chats just to find a PDF, image, code snippet, document, or note you once saved. TeleCup runs entirely on your laptop: no own server, no VPS, no Streamlit, and no mandatory cloud service. The catalog, downloaded files, and configuration are all stored locally.
 
-> **Status:** dalam pengembangan awal (pra-MVP).
-
----
-
-## Daftar Isi
-
-- [Fitur](#fitur)
-- [Teknologi](#teknologi)
-- [Persyaratan](#persyaratan)
-- [Instalasi](#instalasi)
-- [Konfigurasi Telegram API](#konfigurasi-telegram-api)
-- [Menjalankan Aplikasi](#menjalankan-aplikasi)
-- [Struktur Folder](#struktur-folder)
-- [Desain Database](#desain-database)
-- [Keamanan](#keamanan)
-- [Roadmap & Checklist MVP](#roadmap--checklist-mvp)
-- [Pengujian](#pengujian)
-- [Membuat Aplikasi Windows (.exe)](#membuat-aplikasi-windows-exe)
-- [Referensi](#referensi)
+> **Status:** early development (pre-MVP).
 
 ---
 
-## Fitur
+## Table of Contents
 
-### Fitur inti
-
-- Sinkronisasi pesan dari Saved Messages.
-- Mengunduh lampiran: PDF, DOCX, ZIP, gambar, video, audio, dan file lainnya.
-- Tampilan file dalam **grid** atau **list view**.
-- **Folder virtual** yang dapat dibuat, diganti nama, dan dihapus tanpa mengubah pesan asli di Telegram.
-- Kategori otomatis berdasarkan jenis file.
-- Pencarian berdasarkan nama file, caption, teks pesan, dan tag.
-- Favorit serta pengurutan berdasarkan nama, tanggal, ukuran, dan jenis.
-- Preview file yang didukung dan tombol buka file dengan aplikasi Windows.
-- Tombol untuk membuka pesan sumber di Telegram (jika tautan/referensinya tersedia).
-- Sinkronisasi ulang tanpa mengunduh ulang file yang sudah berhasil diarsipkan.
-
-### Fitur lanjutan
-
-- Filter berdasarkan tanggal, jenis media, dan kategori.
-- Deteksi file duplikat menggunakan hash.
-- Progress bar, log sinkronisasi, dan penanganan koneksi terputus.
-- Ekspor dan impor katalog untuk pencadangan.
-- Tema gelap dan terang.
+- [Features](#features)
+- [Technology](#technology)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Telegram API Configuration](#telegram-api-configuration)
+- [Running the App](#running-the-app)
+- [Folder Structure](#folder-structure)
+- [Database Design](#database-design)
+- [Security](#security)
+- [Roadmap & MVP Checklist](#roadmap--mvp-checklist)
+- [Testing](#testing)
+- [Building a Windows App (.exe)](#building-a-windows-app-exe)
+- [References](#references)
 
 ---
 
-## Teknologi
+## Features
 
-| Komponen | Fungsi |
+### Core features
+
+- Sync messages from Saved Messages.
+- Download attachments: PDFs, DOCX, ZIP, images, videos, audio, and other files.
+- Display files in **grid** or **list view**.
+- **Virtual folders** that can be created, renamed, and deleted without modifying the original messages on Telegram.
+- Automatic categorization based on file type.
+- Search by file name, caption, message text, and tags.
+- Favorites and sorting by name, date, size, and type.
+- Preview supported files and open them with Windows applications.
+- Button to open the source message on Telegram (if the link/reference is available).
+- Re-sync without re-downloading files that have already been successfully archived.
+
+### Advanced features
+
+- Filter by date, media type, and category.
+- Duplicate file detection using hashing.
+- Progress bar, sync log, and handling of dropped connections.
+- Export and import catalog for backup.
+- Dark and light themes.
+
+---
+
+## Technology
+
+| Component | Purpose |
 | --- | --- |
-| **PySide6 / Qt** | UI desktop native: sidebar, grid file, dialog, menu klik kanan |
-| **Telethon** | Berkomunikasi dengan Telegram lewat MTProto API menggunakan akun pengguna yang terautentikasi |
-| **SQLite** | Menyimpan metadata pesan, file, folder virtual, tag, dan indeks pencarian |
-| **Penyimpanan lokal + venv** | File tersimpan di disk Windows; library Python diisolasi dengan virtual environment |
+| **PySide6 / Qt** | Native desktop UI: sidebar, file grid, dialogs, right-click menu |
+| **Telethon** | Communicates with Telegram via the MTProto API using an authenticated user account |
+| **SQLite** | Stores message metadata, files, virtual folders, tags, and search index |
+| **Local storage + venv** | Files are saved to Windows disk; Python libraries are isolated with a virtual environment |
 
-> `venv` bukan framework UI ataupun server. Aplikasi dijalankan langsung sebagai program Python yang membuka jendela desktop. Telethon tetap memerlukan koneksi internet saat mengakses Telegram.
+> `venv` is neither a UI framework nor a server. The app runs directly as a Python program that opens a desktop window. Telethon still requires an internet connection when accessing Telegram.
 
 ---
 
-## Persyaratan
+## Requirements
 
 - Windows 10/11
-- Python 3.10 atau lebih baru
-- Akun Telegram aktif
-- Telegram `API ID` dan `API hash` (lihat [Konfigurasi Telegram API](#konfigurasi-telegram-api))
+- Python 3.10 or newer
+- An active Telegram account
+- Telegram `API ID` and `API hash` (see [Telegram API Configuration](#telegram-api-configuration))
 
 ---
 
-## Instalasi
+## Installation
 
 ```powershell
-git clone <url-repo-kamu> TeleCup
+git clone <your-repo-url> TeleCup
 cd TeleCup
 
 py -m venv .venv
@@ -86,7 +86,7 @@ python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-Jika memulai dari nol (belum ada `requirements.txt`):
+If starting from scratch (no `requirements.txt` yet):
 
 ```powershell
 mkdir TeleCup
@@ -100,31 +100,31 @@ pip install PySide6 telethon
 pip freeze > requirements.txt
 ```
 
-> Jika PowerShell menolak menjalankan skrip aktivasi, jalankan sekali:
+> If PowerShell refuses to run the activation script, run this once:
 > `Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned`
 
 ---
 
-## Konfigurasi Telegram API
+## Telegram API Configuration
 
-1. Buka [my.telegram.org](https://my.telegram.org) dan login dengan akun Telegram kamu.
-2. Masuk ke **API development tools** dan buat aplikasi baru.
-3. Salin `api_id` dan `api_hash`.
-4. Buat file `config/settings.json`:
+1. Open [my.telegram.org](https://my.telegram.org) and log in with your Telegram account.
+2. Go to **API development tools** and create a new application.
+3. Copy your `api_id` and `api_hash`.
+4. Create the file `config/settings.json`:
 
 ```json
 {
   "api_id": 123456,
-  "api_hash": "isi_api_hash_kamu",
+  "api_hash": "your_api_hash_here",
   "session_name": "telecup"
 }
 ```
 
-Saat pertama kali dijalankan, kamu akan diminta memasukkan nomor telepon dan kode login dari Telegram.
+The first time you run the app, you will be prompted to enter your phone number and the login code from Telegram.
 
 ---
 
-## Menjalankan Aplikasi
+## Running the App
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
@@ -133,23 +133,23 @@ python app.py
 
 ---
 
-## Struktur Folder
+## Folder Structure
 
 ```
 TeleCup/
-├── .venv/                  # dibuat oleh Python, bukan ditulis manual
-├── app.py                  # titik masuk aplikasi
+├── .venv/                  # created by Python, not written manually
+├── app.py                  # application entry point
 ├── requirements.txt
 ├── .gitignore
 ├── config/
-│   └── settings.json       # rahasia, jangan di-commit
+│   └── settings.json       # secret, do not commit
 ├── src/
 │   ├── __init__.py
-│   ├── telegram_client.py  # autentikasi & akses Saved Messages
-│   ├── sync_service.py     # sinkronisasi pesan & lampiran
-│   ├── database.py         # operasi SQLite
-│   ├── file_service.py     # penyimpanan, cek duplikasi, buka file
-│   ├── search_service.py   # pencarian teks & metadata
+│   ├── telegram_client.py  # authentication & Saved Messages access
+│   ├── sync_service.py     # message & attachment synchronization
+│   ├── database.py         # SQLite operations
+│   ├── file_service.py     # storage, duplicate checking, open file
+│   ├── search_service.py   # text & metadata search
 │   └── ui/
 │       ├── __init__.py
 │       ├── main_window.py
@@ -157,7 +157,7 @@ TeleCup/
 │       ├── file_grid.py
 │       ├── toolbar.py
 │       └── dialogs.py
-├── storage/                # arsip lokal & basis data (tidak di-commit)
+├── storage/                # local archive & database (not committed)
 │   ├── files/
 │   ├── thumbnails/
 │   ├── logs/
@@ -167,97 +167,97 @@ TeleCup/
     └── test_file_service.py
 ```
 
-Pisahkan tampilan, komunikasi Telegram, dan pengelolaan data agar kode tidak menumpuk di satu file.
+Keep the UI, Telegram communication, and data management separate so the code doesn't pile up in a single file.
 
 ---
 
-## Desain Database
+## Database Design
 
-SQLite dengan tabel utama berikut:
+SQLite with the following main tables:
 
-| Tabel | Fungsi |
+| Table | Purpose |
 | --- | --- |
-| `messages` | ID pesan Telegram, tanggal, teks/caption, dan referensi sumber |
-| `files` | Nama file, ukuran, MIME type, hash, dan lokasi lokal |
-| `folders` | Folder virtual yang dibuat pengguna |
-| `file_tags` | Hubungan file dengan tag atau kategori |
-| `sync_state` | Pesan terakhir yang diproses, status sinkronisasi, dan error |
+| `messages` | Telegram message ID, date, text/caption, and source reference |
+| `files` | File name, size, MIME type, hash, and local path |
+| `folders` | Virtual folders created by the user |
+| `file_tags` | Relationship between files and tags or categories |
+| `sync_state` | Last processed message, sync status, and errors |
 
-**Prinsip desain:** pesan Telegram, file yang diunduh, dan pengelompokan buatan pengguna adalah tiga hal berbeda.
+**Design principle:** Telegram messages, downloaded files, and user-defined groupings are three separate things.
 
-- Satu pesan dapat berisi beberapa file.
-- Satu file dapat direferensikan oleh lebih dari satu pesan.
-- Jangan menjadikan **nama file** sebagai ID unik.
-- Simpan ID pesan dan ID chat sebagai referensi sumber.
-- Untuk mencegah duplikasi, gunakan kombinasi ID pesan + identitas media, lalu hash file sebagai pemeriksaan tambahan bila perlu.
-
----
-
-## Keamanan
-
-Karena menyangkut akun Telegram pribadi, keamanan adalah bagian dari desain sejak awal:
-
-- Jangan commit file session Telethon, API hash, kode login, atau OTP ke Git.
-- Pastikan `.venv/`, `storage/`, file session, dan konfigurasi rahasia ada di `.gitignore`.
-- Simpan session di lokasi privat dengan akses terbatas. Session yang bocor dapat memberikan akses ke akun.
-- Gunakan API Telegram resmi dan patuhi batas permintaan (rate limit). Jangan scraping Telegram Web.
-- Jangan menghapus pesan asli saat mengarsipkan file.
-- Buat cadangan `vault.db` dan file arsip secara berkala.
+- One message can contain multiple files.
+- One file can be referenced by more than one message.
+- Do not use **file name** as a unique ID.
+- Store the message ID and chat ID as source references.
+- To prevent duplication, use the combination of message ID + media identity, then file hash as an additional check if needed.
 
 ---
 
-## Roadmap & Checklist MVP
+## Security
 
-Selesaikan UI dan database terlebih dahulu, uji integrasi Telegram dengan sedikit pesan, baru kembangkan sinkronisasi penuh.
+Since this involves a personal Telegram account, security is part of the design from the start:
 
-- [ ] Aplikasi membuka jendela desktop PySide6
-- [ ] Sidebar dan grid file tampil dengan rapi
-- [ ] SQLite dapat menyimpan metadata file
-- [ ] Folder virtual dan pencarian berfungsi
-- [ ] Login Telegram berhasil
-- [ ] Pesan Saved Messages dapat dibaca
-- [ ] Lampiran dapat diunduh ke penyimpanan lokal
-- [ ] Sinkronisasi ulang tidak menggandakan arsip
-- [ ] File dan database dapat dicadangkan
-
-### Langkah implementasi
-
-1. **Siapkan lingkungan Python** — buat folder project, aktifkan `venv`, pasang dependensi.
-2. **Bangun UI dulu** — `app.py` dan `main_window.py` dengan sidebar, toolbar, area file, kotak pencarian, dan status bar memakai data dummy.
-3. **Database & file manager** — SQLite, folder virtual, kategori, favorit, sortir, pencarian, dan buka file lokal.
-4. **Hubungkan Telegram** — login dengan akun sendiri via Telethon dan baca Saved Messages.
-5. **Sinkronisasi** — baca pesan bertahap, catat metadata, unduh ke folder staging, pindahkan ke arsip setelah berhasil, simpan status agar bisa dilanjutkan.
-6. **Uji & kemas** — uji koneksi terputus, file duplikat, file besar, pesan tanpa lampiran, dan file yang terhapus dari disk.
+- Do not commit Telethon session files, API hash, login codes, or OTPs to Git.
+- Make sure `.venv/`, `storage/`, session files, and secret config are in `.gitignore`.
+- Store sessions in a private location with restricted access. A leaked session can grant access to the account.
+- Use the official Telegram API and respect rate limits. Do not scrape Telegram Web.
+- Do not delete original messages when archiving files.
+- Back up `vault.db` and archive files regularly.
 
 ---
 
-## Pengujian
+## Roadmap & MVP Checklist
+
+Complete the UI and database first, test Telegram integration with a few messages, then build out full synchronization.
+
+- [ ] App opens a PySide6 desktop window
+- [ ] Sidebar and file grid display correctly
+- [ ] SQLite can store file metadata
+- [ ] Virtual folders and search work correctly
+- [ ] Telegram login succeeds
+- [ ] Saved Messages can be read
+- [ ] Attachments can be downloaded to local storage
+- [ ] Re-sync does not duplicate archives
+- [ ] Files and database can be backed up
+
+### Implementation steps
+
+1. **Set up the Python environment** — create the project folder, activate `venv`, install dependencies.
+2. **Build the UI first** — `app.py` and `main_window.py` with sidebar, toolbar, file area, search box, and status bar using dummy data.
+3. **Database & file manager** — SQLite, virtual folders, categories, favorites, sorting, search, and open local files.
+4. **Connect Telegram** — log in with your own account via Telethon and read Saved Messages.
+5. **Synchronization** — read messages incrementally, record metadata, download to a staging folder, move to archive on success, save state so it can be resumed.
+6. **Test & package** — test dropped connections, duplicate files, large files, messages without attachments, and files deleted from disk.
+
+---
+
+## Testing
 
 ```powershell
 pip install pytest
 pytest tests/
 ```
 
-Skenario yang perlu diuji: koneksi terputus, file duplikat, file berukuran besar, pesan tanpa lampiran, dan file yang dihapus dari disk.
+Scenarios to test: dropped connections, duplicate files, large files, messages without attachments, and files deleted from disk.
 
 ---
 
-## Membuat Aplikasi Windows (.exe)
+## Building a Windows App (.exe)
 
-Setelah aplikasi stabil, kemas dengan PyInstaller:
+Once the app is stable, package it with PyInstaller:
 
 ```powershell
 pip install pyinstaller
 pyinstaller --noconfirm --windowed --name TeleCup app.py
 ```
 
-Hasilnya ada di folder `dist/`.
+The output will be in the `dist/` folder.
 
 ---
 
-## Referensi
+## References
 
-- [Telethon — dokumentasi](https://docs.telethon.dev/en/stable/)
+- [Telethon — documentation](https://docs.telethon.dev/en/stable/)
 - [Telegram Saved Messages API](https://core.telegram.org/api/saved-messages)
 - [Qt for Python / PySide6](https://doc.qt.io/qtforpython-6/)
 - [Python `venv`](https://docs.python.org/3/library/venv.html)
@@ -265,5 +265,5 @@ Hasilnya ada di folder `dist/`.
 
 ---
 
-## Lisensi
+## License
 
