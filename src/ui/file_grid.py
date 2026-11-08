@@ -1,4 +1,4 @@
-"""Responsive file and folder grid with Google Drive style folder cards, breadcrumbs, and drag & drop."""
+"""Responsive file and folder grid with compact drag preview, Google Drive folder cards, and drop highlight."""
 
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
@@ -28,6 +28,7 @@ from PySide6.QtGui import (
     QFont,
     QDrag,
     QDragEnterEvent,
+    QDragMoveEvent,
     QDropEvent,
     QPen,
 )
@@ -65,12 +66,9 @@ def create_folder_badge_icon() -> QIcon:
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
 
-    # Folder body background
-    painter.setBrush(QColor("#2563eb"))  # Classic clean blue
+    painter.setBrush(QColor("#2563eb"))
     painter.setPen(QColor("#3b82f6"))
     painter.drawRoundedRect(2, 6, width - 4, height - 10, 6, 6)
-
-    # Folder tab top-left
     painter.drawRoundedRect(2, 2, 18, 10, 3, 3)
 
     painter.setPen(QColor("#ffffff"))
@@ -80,6 +78,46 @@ def create_folder_badge_icon() -> QIcon:
     painter.end()
 
     return QIcon(pixmap)
+
+
+def create_compact_drag_pill(file_data: dict) -> QPixmap:
+    """Create a sleek, compact floating pill for dragging so it never blocks what's underneath."""
+    w, h = 160, 32
+    pixmap = QPixmap(w, h)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Pill Background
+    painter.setBrush(QColor(30, 41, 59, 235))
+    painter.setPen(QPen(QColor("#3b82f6"), 1.5))
+    painter.drawRoundedRect(1, 1, w - 2, h - 2, 6, 6)
+
+    # Mini Badge
+    ext = file_data.get("ext", "file").upper()[:4]
+    badge_bg = BADGE_COLORS.get(file_data.get("ext", "").lower(), "#475569")
+    painter.setBrush(QColor(badge_bg))
+    painter.setPen(Qt.NoPen)
+    painter.drawRoundedRect(5, 5, 26, 22, 4, 4)
+
+    painter.setPen(QColor("#ffffff"))
+    badge_font = QFont("Segoe UI", 7, QFont.Bold)
+    painter.setFont(badge_font)
+    painter.drawText(QRect(5, 5, 26, 22), Qt.AlignCenter, ext)
+
+    # Truncated File Name
+    name = file_data.get("name", "")
+    painter.setPen(QColor("#f4f4f5"))
+    name_font = QFont("Segoe UI", 9, QFont.Medium)
+    painter.setFont(name_font)
+    text_rect = QRect(36, 0, w - 42, h)
+    metrics = painter.fontMetrics()
+    elided = metrics.elidedText(name, Qt.ElideMiddle, text_rect.width())
+    painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, elided)
+
+    painter.end()
+    return pixmap
 
 
 BADGE_COLORS = {
@@ -98,16 +136,17 @@ BADGE_COLORS = {
 
 
 class FolderCardWidget(QFrame):
-    """Google Drive style child folder card. Double-click enters the folder; also accepts dropped files."""
+    """Google Drive style child folder card with vivid dashed highlight on drag-hover."""
 
     folder_clicked = Signal(dict)
     folder_double_clicked = Signal(dict)
-    file_dropped_here = Signal(int, int)  # (file_id, this_folder_id)
+    file_dropped_here = Signal(int, int)
 
     def __init__(self, folder_data: dict, parent=None):
         super().__init__(parent)
         self.folder_data = folder_data
         self.is_selected = False
+        self.is_drop_target = False
         self.setAcceptDrops(True)
 
         self.setCursor(Qt.PointingHandCursor)
@@ -125,14 +164,12 @@ class FolderCardWidget(QFrame):
         layout.setSpacing(12)
         layout.setAlignment(Qt.AlignVCenter)
 
-        # Folder Icon
         icon_label = QLabel()
         icon_label.setAttribute(Qt.WA_TranslucentBackground, True)
         icon_label.setStyleSheet("background: transparent; border: none;")
         icon_label.setPixmap(create_folder_badge_icon().pixmap(38, 38))
         layout.addWidget(icon_label)
 
-        # Text Container (Folder Name + item count)
         text_layout = QVBoxLayout()
         text_layout.setContentsMargins(0, 0, 0, 0)
         text_layout.setSpacing(2)
@@ -164,7 +201,6 @@ class FolderCardWidget(QFrame):
 
         layout.addLayout(text_layout, stretch=1)
 
-        # Pointer chevron indicator
         chevron = QLabel("›")
         chevron.setStyleSheet("color: #71717a; font-size: 18px; font-weight: bold; background: transparent;")
         layout.addWidget(chevron)
@@ -173,8 +209,22 @@ class FolderCardWidget(QFrame):
         self.is_selected = selected
         self._update_style()
 
+    def set_drop_target(self, is_target: bool):
+        self.is_drop_target = is_target
+        self._update_style()
+
     def _update_style(self):
-        if self.is_selected:
+        if self.is_drop_target:
+            self.setStyleSheet(
+                """
+                FolderCardWidget {
+                    background-color: #1e3a5f;
+                    border: 2px dashed #60a5fa;
+                    border-radius: 8px;
+                }
+                """
+            )
+        elif self.is_selected:
             self.setStyleSheet(
                 """
                 FolderCardWidget {
@@ -211,17 +261,25 @@ class FolderCardWidget(QFrame):
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasFormat("application/x-telecup-file"):
-            self.set_selected(True)
+            self.set_drop_target(True)
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
+    def dragMoveEvent(self, event: QDragMoveEvent):
+        if event.mimeData().hasFormat("application/x-telecup-file"):
+            if not self.is_drop_target:
+                self.set_drop_target(True)
+            event.acceptProposedAction()
+        else:
+            super().dragMoveEvent(event)
+
     def dragLeaveEvent(self, event):
-        self.set_selected(False)
+        self.set_drop_target(False)
         super().dragLeaveEvent(event)
 
     def dropEvent(self, event: QDropEvent):
-        self.set_selected(False)
+        self.set_drop_target(False)
         if event.mimeData().hasFormat("application/x-telecup-file"):
             file_id = int(event.mimeData().data("application/x-telecup-file").data().decode("utf-8"))
             self.file_dropped_here.emit(file_id, self.folder_data["id"])
@@ -229,7 +287,7 @@ class FolderCardWidget(QFrame):
 
 
 class FileCardWidget(QFrame):
-    """Flexible card with drag support to sidebar/folders and 100% transparent label backgrounds."""
+    """Flexible card with compact drag preview and 100% transparent label backgrounds."""
 
     card_clicked = Signal(dict)
     card_double_clicked = Signal(dict)
@@ -256,7 +314,6 @@ class FileCardWidget(QFrame):
         layout.setSpacing(6)
         layout.setAlignment(Qt.AlignCenter)
 
-        # 1. Badge Icon
         ext = self.file_data.get("ext", "file").lower()
         badge_color = BADGE_COLORS.get(ext, "#475569")
         icon = create_file_badge_icon(ext, badge_color)
@@ -268,7 +325,6 @@ class FileCardWidget(QFrame):
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
-        # 2. File Name (100% transparent background)
         fav_tag = "[Fav] " if self.file_data.get("is_fav") else ""
         safe_name = f"{fav_tag}{self.file_data['name']}".replace("&", "&&")
         self.name_label = QLabel(safe_name)
@@ -280,7 +336,6 @@ class FileCardWidget(QFrame):
         )
         layout.addWidget(self.name_label)
 
-        # 3. Meta (Size | Date)
         date_short = self.file_data.get("date_added", self.file_data.get("date", "")).split()[0]
         meta_text = f"{self.file_data['size_str']}  |  {date_short}"
         meta_label = QLabel(meta_text)
@@ -347,9 +402,10 @@ class FileCardWidget(QFrame):
                 mime.setText(self.file_data["name"])
                 drag.setMimeData(mime)
 
-                ghost = self.grab()
-                drag.setPixmap(ghost)
-                drag.setHotSpot(self.drag_start_pos)
+                # Use compact floating pill (160x32px) so cursor and target folders remain 100% visible
+                preview = create_compact_drag_pill(self.file_data)
+                drag.setPixmap(preview)
+                drag.setHotSpot(QPoint(12, 16))
                 drag.exec(Qt.MoveAction)
                 self.drag_start_pos = None
                 return
@@ -365,8 +421,8 @@ class FileGridWidget(QWidget):
     """File & Folder display area rendering child folder cards, file cards, and breadcrumb bar."""
 
     file_opened = Signal(dict)
-    folder_navigated = Signal(int, str)  # (folder_id, full_path)
-    file_dropped_on_folder = Signal(int, int)  # (file_id, folder_id)
+    folder_navigated = Signal(int, str)
+    file_dropped_on_folder = Signal(int, int)
     breadcrumb_navigated = Signal(str, str)
     toggle_favorite_requested = Signal(int)
     delete_file_requested = Signal(int)
@@ -387,18 +443,15 @@ class FileGridWidget(QWidget):
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(12)
 
-        # ── 1. Breadcrumb Path Bar ──
         self.breadcrumb_container = QWidget()
         self.breadcrumb_layout = QHBoxLayout(self.breadcrumb_container)
         self.breadcrumb_layout.setContentsMargins(0, 0, 0, 0)
         self.breadcrumb_layout.setSpacing(6)
         layout.addWidget(self.breadcrumb_container)
 
-        # ── 2. View Container (Grid / List) ──
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
 
-        # Responsive Grid
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet(
@@ -420,9 +473,8 @@ class FileGridWidget(QWidget):
         self.grid_layout.setAlignment(Qt.AlignTop)
 
         self.scroll_area.setWidget(self.grid_content)
-        self.stack.addWidget(self.scroll_area)  # index 0
+        self.stack.addWidget(self.scroll_area)
 
-        # List View
         self.list_view = QTableWidget()
         self.list_view.setColumnCount(5)
         self.list_view.setHorizontalHeaderLabels([
@@ -471,7 +523,7 @@ class FileGridWidget(QWidget):
         self.list_view.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_view.customContextMenuRequested.connect(self._open_table_context_menu)
 
-        self.stack.addWidget(self.list_view)  # index 1
+        self.stack.addWidget(self.list_view)
 
         self.update_breadcrumb("category", "all")
 
@@ -480,7 +532,6 @@ class FileGridWidget(QWidget):
         self._recalculate_grid_columns()
 
     def _recalculate_grid_columns(self):
-        """Auto-calculate columns and layout folder cards and file cards seamlessly."""
         if not self.folder_widgets and not self.card_widgets:
             return
 
@@ -492,13 +543,11 @@ class FileGridWidget(QWidget):
         available = max(min_card_w, viewport_w - padding)
         cols = max(1, available // (min_card_w + gap))
 
-        # Clear stretches
         for c in range(12):
             self.grid_layout.setColumnStretch(c, 0)
 
         curr_row = 0
 
-        # ── Section 1: Subfolders (if any exist) ──
         if self.folder_widgets:
             if self.card_widgets:
                 sec_label = QLabel("FOLDERS")
@@ -515,7 +564,6 @@ class FileGridWidget(QWidget):
 
             curr_row += (len(self.folder_widgets) + cols - 1) // cols
 
-        # ── Section 2: Files (if any exist) ──
         if self.card_widgets:
             if self.folder_widgets:
                 sec_label = QLabel("FILES")
@@ -534,11 +582,9 @@ class FileGridWidget(QWidget):
             self.grid_layout.setColumnStretch(c, 1)
 
     def set_data(self, subfolders: List[Dict[str, Any]], files: List[Dict[str, Any]]):
-        """Load and display child folders AND files queried from SQLite."""
         self.displayed_folders = subfolders
         self.displayed_files = files
 
-        # 1. Clear previous items & headers
         for w in self.header_widgets:
             self.grid_layout.removeWidget(w)
             w.deleteLater()
@@ -554,7 +600,6 @@ class FileGridWidget(QWidget):
             card.deleteLater()
         self.card_widgets.clear()
 
-        # 2. Build Folder Cards
         for f in self.displayed_folders:
             f_card = FolderCardWidget(f)
             f_card.folder_clicked.connect(self._on_folder_clicked)
@@ -562,7 +607,6 @@ class FileGridWidget(QWidget):
             f_card.file_dropped_here.connect(self.file_dropped_on_folder.emit)
             self.folder_widgets.append(f_card)
 
-        # 3. Build File Cards
         for f in self.displayed_files:
             card = FileCardWidget(f)
             card.card_clicked.connect(self._on_card_clicked)
@@ -572,7 +616,6 @@ class FileGridWidget(QWidget):
 
         self._recalculate_grid_columns()
 
-        # 4. Populate List View (combines folders on top, then files)
         total_rows = len(self.displayed_folders) + len(self.displayed_files)
         self.list_view.setRowCount(total_rows)
 
@@ -602,7 +645,6 @@ class FileGridWidget(QWidget):
                 self.list_view.setItem(row_idx, col, item)
             row_idx += 1
 
-        # Refresh breadcrumb counter
         item_type, val = self.current_location
         self.update_breadcrumb(item_type, val)
 
@@ -673,8 +715,8 @@ class FileGridWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QMenu::separator {
                 height: 1px;
@@ -793,7 +835,6 @@ class FileGridWidget(QWidget):
 
         self.breadcrumb_layout.addStretch(1)
 
-        # Counter text
         counts = []
         if self.displayed_folders:
             counts.append(f"{len(self.displayed_folders)} folder(s)")

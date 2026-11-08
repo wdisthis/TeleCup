@@ -309,12 +309,10 @@ class DatabaseManager:
                 query += " AND f.category = ?"
                 params.append(category)
 
-        # Folder filter (only files directly in this folder or descendants)
+        # Folder filter: only show files DIRECTLY in this folder (matching Google Drive / Explorer behavior)
         if folder_id is not None:
-            descendants = self.get_descendant_folder_ids(folder_id)
-            placeholders = ",".join("?" for _ in descendants)
-            query += f" AND f.folder_id IN ({placeholders})"
-            params.extend(descendants)
+            query += " AND f.folder_id = ?"
+            params.append(folder_id)
 
         # Search query (by filename or telegram caption)
         if search_query:

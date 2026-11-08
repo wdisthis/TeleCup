@@ -1,4 +1,4 @@
-"""Sidebar component connected directly to SQLite database for folder persistence."""
+"""Sidebar component with high-visibility drag-and-drop folder target highlighting and auto-expansion."""
 
 from pathlib import Path
 from typing import Optional, Dict
@@ -14,8 +14,19 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QPointF
-from PySide6.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QSize, QPointF, QTimer
+from PySide6.QtGui import (
+    QFont,
+    QIcon,
+    QPixmap,
+    QPainter,
+    QColor,
+    QPen,
+    QCursor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
 
 from ..database import DatabaseManager
 
@@ -64,7 +75,7 @@ def create_plus_icon(size: int = 15, color_hex: str = "#3b82f6") -> QIcon:
 
 
 class NavTreeWidget(QTreeWidget):
-    """Custom TreeWidget accepting file drops directly into SQLite virtual folders."""
+    """Custom TreeWidget with pinpoint accurate drag-hover tracking and auto-expand."""
 
     file_dropped = Signal(int, int)  # (file_id, target_folder_id)
 
@@ -72,31 +83,75 @@ class NavTreeWidget(QTreeWidget):
         super().__init__(parent)
         self.sidebar = sidebar
         self.setAcceptDrops(True)
+        self.saved_selected_item: Optional[QTreeWidgetItem] = None
+        self.drag_hover_item: Optional[QTreeWidgetItem] = None
+
+        self.expand_timer = QTimer(self)
+        self.expand_timer.setSingleShot(True)
+        self.expand_timer.timeout.connect(self._auto_expand_hovered)
+
+    def _auto_expand_hovered(self):
+        if self.drag_hover_item and not self.drag_hover_item.isExpanded():
+            self.drag_hover_item.setExpanded(True)
+
+    def _get_target_item_at(self, pos) -> Optional[QTreeWidgetItem]:
+        """Resolve item under cursor accurately with fallback to global cursor."""
+        item = self.itemAt(pos)
+        if not item:
+            item = self.itemAt(self.viewport().mapFromGlobal(QCursor.pos()))
+        return item
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasFormat("application/x-telecup-file"):
+            self.saved_selected_item = self.currentItem()
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent):
         if event.mimeData().hasFormat("application/x-telecup-file"):
-            item = self.itemAt(event.position().toPoint())
+            item = self._get_target_item_at(event.position().toPoint())
+
             if item and item.data(0, Qt.UserRole) and item.data(0, Qt.UserRole).get("type") == "folder":
-                self.setCurrentItem(item)
+                if self.drag_hover_item != item:
+                    self.drag_hover_item = item
+                    self.setCurrentItem(item)
+                    self.expand_timer.start(500)
                 event.acceptProposedAction()
                 return
+            else:
+                self.drag_hover_item = None
+                self.expand_timer.stop()
+                if self.saved_selected_item:
+                    self.setCurrentItem(self.saved_selected_item)
+
         super().dragMoveEvent(event)
 
+    def dragLeaveEvent(self, event):
+        self.expand_timer.stop()
+        self.drag_hover_item = None
+        if self.saved_selected_item:
+            self.setCurrentItem(self.saved_selected_item)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent):
+        self.expand_timer.stop()
+        target_item = self._get_target_item_at(event.position().toPoint())
+        if not target_item:
+            target_item = self.drag_hover_item
+
+        self.drag_hover_item = None
+
         if event.mimeData().hasFormat("application/x-telecup-file"):
-            item = self.itemAt(event.position().toPoint())
-            if item and item.data(0, Qt.UserRole) and item.data(0, Qt.UserRole).get("type") == "folder":
+            if target_item and target_item.data(0, Qt.UserRole) and target_item.data(0, Qt.UserRole).get("type") == "folder":
                 file_id = int(event.mimeData().data("application/x-telecup-file").data().decode("utf-8"))
-                folder_id = item.data(0, Qt.UserRole).get("id")
+                folder_id = target_item.data(0, Qt.UserRole).get("id")
                 self.file_dropped.emit(file_id, folder_id)
                 event.acceptProposedAction()
                 return
+
+        if self.saved_selected_item:
+            self.setCurrentItem(self.saved_selected_item)
         super().dropEvent(event)
 
 
@@ -104,7 +159,7 @@ class SidebarWidget(QWidget):
     """Sidebar reading and persisting virtual folders directly in SQLite."""
 
     category_selected = Signal(str)
-    folder_selected = Signal(int, str)  # (folder_id, breadcrumb_path)
+    folder_selected = Signal(int, str)
     file_dropped_on_folder = Signal(int, int)
     sync_requested = Signal()
 
@@ -169,7 +224,7 @@ class SidebarWidget(QWidget):
         btn_container.addStretch(1)
         layout.addLayout(btn_container)
 
-        # 3. Tree Widget with SQLite support
+        # 3. Tree Widget with High-Contrast Vivid Selection & Drop Target
         self.tree = NavTreeWidget(self, self)
         self.tree.setHeaderHidden(True)
         self.tree.setAnimated(True)
@@ -191,7 +246,7 @@ class SidebarWidget(QWidget):
             }}
             QTreeWidget::item {{
                 height: 28px;
-                padding: 2px 4px;
+                padding: 2px 6px;
                 color: #d4d4d8;
                 border-radius: 4px;
             }}
@@ -199,9 +254,10 @@ class SidebarWidget(QWidget):
                 background-color: #27272a;
                 color: #ffffff;
             }}
+            /* High-visibility active selection & drop target indicator */
             QTreeWidget::item:selected, QTreeWidget::branch:selected {{
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
                 font-weight: 600;
             }}
             QTreeWidget::branch:has-children:!has-siblings:closed,
@@ -244,8 +300,8 @@ class SidebarWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QMenu::separator {
                 height: 1px;
@@ -269,10 +325,8 @@ class SidebarWidget(QWidget):
         self.new_btn.setMenu(self.new_menu)
 
     def reload_tree(self, select_folder_id: Optional[int] = None):
-        """Reload entire sidebar categories and folders from SQLite database."""
         self.tree.clear()
 
-        # ── 1. Library Categories ──
         cat_header = QTreeWidgetItem(self.tree, ["CATEGORIES"])
         cat_header.setFlags(Qt.NoItemFlags)
         cat_font = QFont("Segoe UI", 9, QFont.Bold)
@@ -286,21 +340,17 @@ class SidebarWidget(QWidget):
         self._add_category_item("Archives", "archives")
         self._add_category_item("Favorites", "favorites")
 
-        # Spacer
         spacer = QTreeWidgetItem(self.tree, [""])
         spacer.setFlags(Qt.NoItemFlags)
 
-        # ── 2. Virtual Folders from SQLite ──
         folders_header = QTreeWidgetItem(self.tree, ["VIRTUAL FOLDERS"])
         folders_header.setFlags(Qt.NoItemFlags)
         folders_header.setFont(0, cat_font)
         folders_header.setForeground(0, QColor("#71717a"))
 
-        # Fetch from DB and build hierarchical tree
         db_folders = self.db.get_all_folders()
         folder_items_map: Dict[int, QTreeWidgetItem] = {}
 
-        # 1st pass: root folders
         for f in db_folders:
             if f["parent_id"] is None:
                 item = QTreeWidgetItem(self.tree, [f["name"]])
@@ -308,7 +358,6 @@ class SidebarWidget(QWidget):
                 item.setExpanded(True)
                 folder_items_map[f["id"]] = item
 
-        # 2nd pass: subfolders (loop until all placed)
         remaining = [f for f in db_folders if f["parent_id"] is not None]
         while remaining:
             placed = False
@@ -325,7 +374,6 @@ class SidebarWidget(QWidget):
             if not placed:
                 break
 
-        # Selection state
         if select_folder_id and select_folder_id in folder_items_map:
             self.tree.setCurrentItem(folder_items_map[select_folder_id])
         else:
@@ -437,8 +485,8 @@ class SidebarWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QMenu::separator {
                 height: 1px;
