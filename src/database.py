@@ -138,7 +138,6 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) as cnt FROM folders;")
             if cursor.fetchone()["cnt"] == 0:
-                # Create root folders
                 cursor.execute("INSERT INTO folders (name, parent_id) VALUES ('Work Projects', NULL);")
                 work_id = cursor.lastrowid
 
@@ -148,7 +147,6 @@ class DatabaseManager:
                 cursor.execute("INSERT INTO folders (name, parent_id) VALUES ('Learning & E-books', NULL);")
                 learning_id = cursor.lastrowid
 
-                # Create subfolders
                 cursor.execute("INSERT INTO folders (name, parent_id) VALUES ('2026', ?);", (work_id,))
                 sub_2026_id = cursor.lastrowid
 
@@ -161,7 +159,6 @@ class DatabaseManager:
                 cursor.execute("INSERT INTO folders (name, parent_id) VALUES ('Tax 2026', ?);", (finance_id,))
                 tax_id = cursor.lastrowid
 
-                # Seed sample files stored directly in SQLite
                 sample_files = [
                     (1042, "Python_CheatSheet_v2.pdf", "pdf", "documents", 2516582, format_size(2516582), learning_id, 1, "2026-10-28 14:20", "#1042 - Quick Python Guide"),
                     (1039, "Server_Architecture_Diagram.png", "png", "images", 1887436, format_size(1887436), q4_id, 0, "2026-10-27 09:12", "#1039 - Diagram final"),
@@ -194,6 +191,41 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute("SELECT id, name, parent_id FROM folders ORDER BY parent_id IS NOT NULL, name ASC;")
             return [dict(row) for row in cursor.fetchall()]
+
+    def get_subfolders(self, parent_id: Optional[int]) -> List[Dict[str, Any]]:
+        """Get direct child folders of a folder, including item counters."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            if parent_id is None:
+                cursor.execute(
+                    """
+                    SELECT f.id, f.name, f.parent_id,
+                           (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as direct_files,
+                           (SELECT COUNT(*) FROM folders WHERE parent_id = f.id) as subfolders_count
+                    FROM folders f
+                    WHERE f.parent_id IS NULL
+                    ORDER BY f.name ASC;
+                    """
+                )
+            else:
+                cursor.execute(
+                    """
+                    SELECT f.id, f.name, f.parent_id,
+                           (SELECT COUNT(*) FROM files WHERE folder_id = f.id) as direct_files,
+                           (SELECT COUNT(*) FROM folders WHERE parent_id = f.id) as subfolders_count
+                    FROM folders f
+                    WHERE f.parent_id = ?
+                    ORDER BY f.name ASC;
+                    """,
+                    (parent_id,)
+                )
+            rows = cursor.fetchall()
+            result = []
+            for row in rows:
+                item = dict(row)
+                item["path"] = self.get_folder_path(item["id"])
+                result.append(item)
+            return result
 
     def add_folder(self, name: str, parent_id: Optional[int] = None) -> int:
         """Create a new folder or subfolder."""
@@ -277,7 +309,7 @@ class DatabaseManager:
                 query += " AND f.category = ?"
                 params.append(category)
 
-        # Folder filter (includes subfolders)
+        # Folder filter (only files directly in this folder or descendants)
         if folder_id is not None:
             descendants = self.get_descendant_folder_ids(folder_id)
             placeholders = ",".join("?" for _ in descendants)
@@ -387,4 +419,3 @@ class DatabaseManager:
                 (key, value)
             )
             conn.commit()
-

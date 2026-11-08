@@ -127,7 +127,9 @@ class MainWindow(QMainWindow):
         self.sidebar.sync_requested.connect(self._on_sync_requested)
         self.sidebar.file_dropped_on_folder.connect(self._on_file_dropped_on_folder)
 
-        # File Grid Events
+        # File & Folder Grid Events
+        self.file_grid.folder_navigated.connect(self._on_folder_navigated_from_grid)
+        self.file_grid.file_dropped_on_folder.connect(self._on_file_dropped_on_folder)
         self.file_grid.breadcrumb_navigated.connect(self._on_breadcrumb_navigated)
         self.file_grid.toggle_favorite_requested.connect(self._on_toggle_favorite)
         self.file_grid.delete_file_requested.connect(self._on_delete_file)
@@ -139,24 +141,38 @@ class MainWindow(QMainWindow):
         self.toolbar.sync_requested.connect(self._on_sync_requested)
 
     def _refresh_vault(self):
-        """Query SQLite database with current filters and refresh display."""
+        """Query SQLite database for child folders AND files, then refresh display."""
+        # Query child folders if currently viewing a folder
+        subfolders = []
+        if not self.current_search:
+            if self.current_folder_id is not None:
+                subfolders = self.db.get_subfolders(self.current_folder_id)
+
+        # Query files
         files = self.db.get_files(
             category=self.current_category,
             folder_id=self.current_folder_id,
             search_query=self.current_search,
             sort_key=self.current_sort,
         )
-        self.file_grid.set_files(files)
+
+        self.file_grid.set_data(subfolders, files)
 
         # Update Status Bar Text
-        count = len(files)
+        summary = []
+        if subfolders:
+            summary.append(f"{len(subfolders)} folder(s)")
+        if files:
+            summary.append(f"{len(files)} file(s)")
+        count_str = ", ".join(summary) if summary else "0 items"
+
         if self.current_search:
-            self.status_label.setText(f'Search: "{self.current_search}" | {count} file(s) found')
+            self.status_label.setText(f'Search: "{self.current_search}" | {len(files)} file(s) found')
         elif self.current_folder_id is not None:
-            self.status_label.setText(f"Folder: {self.current_folder_path} | {count} file(s)")
+            self.status_label.setText(f"Folder: {self.current_folder_path} | {count_str}")
         else:
             cat_name = "All Files" if self.current_category == "all" else (self.current_category or "").capitalize()
-            self.status_label.setText(f"Category: {cat_name} | {count} file(s)")
+            self.status_label.setText(f"Category: {cat_name} | {count_str}")
 
     def _on_category_selected(self, category_key: str):
         self.current_category = category_key
@@ -171,6 +187,11 @@ class MainWindow(QMainWindow):
         self.current_folder_path = full_path
         self.file_grid.update_breadcrumb("folder", full_path)
         self._refresh_vault()
+
+    def _on_folder_navigated_from_grid(self, folder_id: int, full_path: str):
+        """User double clicked a child folder card in the main view."""
+        self.sidebar.select_folder_by_id(folder_id)
+        self._on_folder_selected(folder_id, full_path)
 
     def _on_file_dropped_on_folder(self, file_id: int, target_folder_id: int):
         self.db.move_file_to_folder(file_id, target_folder_id)
@@ -209,7 +230,6 @@ class MainWindow(QMainWindow):
             self.sidebar.select_category_by_key(path_val)
             self._on_category_selected(path_val)
         elif item_type == "folder":
-            # Find folder ID matching path
             for f in self.db.get_all_folders():
                 if self.db.get_folder_path(f["id"]) == path_val:
                     self.sidebar.select_folder_by_id(f["id"])

@@ -1,4 +1,4 @@
-"""Responsive file grid with flexible-width cards, drag-and-drop, SQLite event hooks, and breadcrumbs."""
+"""Responsive file and folder grid with Google Drive style folder cards, breadcrumbs, and drag & drop."""
 
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
@@ -20,7 +20,17 @@ from PySide6.QtWidgets import (
     QApplication,
 )
 from PySide6.QtCore import Qt, QSize, Signal, QPoint, QRect, QMimeData
-from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QDrag
+from PySide6.QtGui import (
+    QIcon,
+    QPixmap,
+    QPainter,
+    QColor,
+    QFont,
+    QDrag,
+    QDragEnterEvent,
+    QDropEvent,
+    QPen,
+)
 
 
 def create_file_badge_icon(ext: str, bg_hex: str = "#475569") -> QIcon:
@@ -32,7 +42,6 @@ def create_file_badge_icon(ext: str, bg_hex: str = "#475569") -> QIcon:
 
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-
     painter.setBrush(QColor(bg_hex))
     painter.setPen(QColor("#52525b"))
     painter.drawRoundedRect(1, 1, width - 2, height - 2, 6, 6)
@@ -41,6 +50,33 @@ def create_file_badge_icon(ext: str, bg_hex: str = "#475569") -> QIcon:
     font = QFont("Segoe UI", 9, QFont.Bold)
     painter.setFont(font)
     painter.drawText(QRect(0, 0, width, height), Qt.AlignCenter, ext.upper()[:4])
+    painter.end()
+
+    return QIcon(pixmap)
+
+
+def create_folder_badge_icon() -> QIcon:
+    """Generate clean folder icon for child folder cards."""
+    width = 42
+    height = 42
+    pixmap = QPixmap(width, height)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+
+    # Folder body background
+    painter.setBrush(QColor("#2563eb"))  # Classic clean blue
+    painter.setPen(QColor("#3b82f6"))
+    painter.drawRoundedRect(2, 6, width - 4, height - 10, 6, 6)
+
+    # Folder tab top-left
+    painter.drawRoundedRect(2, 2, 18, 10, 3, 3)
+
+    painter.setPen(QColor("#ffffff"))
+    font = QFont("Segoe UI", 8, QFont.Bold)
+    painter.setFont(font)
+    painter.drawText(QRect(0, 4, width, height - 4), Qt.AlignCenter, "DIR")
     painter.end()
 
     return QIcon(pixmap)
@@ -61,8 +97,139 @@ BADGE_COLORS = {
 }
 
 
+class FolderCardWidget(QFrame):
+    """Google Drive style child folder card. Double-click enters the folder; also accepts dropped files."""
+
+    folder_clicked = Signal(dict)
+    folder_double_clicked = Signal(dict)
+    file_dropped_here = Signal(int, int)  # (file_id, this_folder_id)
+
+    def __init__(self, folder_data: dict, parent=None):
+        super().__init__(parent)
+        self.folder_data = folder_data
+        self.is_selected = False
+        self.setAcceptDrops(True)
+
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumWidth(200)
+        self.setMaximumWidth(360)
+        self.setFixedHeight(82)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        self._init_ui()
+        self._update_style()
+
+    def _init_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 10, 14, 10)
+        layout.setSpacing(12)
+        layout.setAlignment(Qt.AlignVCenter)
+
+        # Folder Icon
+        icon_label = QLabel()
+        icon_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        icon_label.setStyleSheet("background: transparent; border: none;")
+        icon_label.setPixmap(create_folder_badge_icon().pixmap(38, 38))
+        layout.addWidget(icon_label)
+
+        # Text Container (Folder Name + item count)
+        text_layout = QVBoxLayout()
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(2)
+        text_layout.setAlignment(Qt.AlignVCenter)
+
+        safe_name = self.folder_data["name"].replace("&", "&&")
+        self.name_label = QLabel(safe_name)
+        self.name_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.name_label.setStyleSheet(
+            "background: transparent; border: none; color: #f4f4f5; font-size: 13px; font-weight: 600;"
+        )
+        text_layout.addWidget(self.name_label)
+
+        direct_files = self.folder_data.get("direct_files", 0)
+        sub_count = self.folder_data.get("subfolders_count", 0)
+        meta_parts = []
+        if sub_count > 0:
+            meta_parts.append(f"{sub_count} subfolder(s)")
+        if direct_files > 0:
+            meta_parts.append(f"{direct_files} file(s)")
+        meta_str = " • ".join(meta_parts) if meta_parts else "Empty folder"
+
+        self.meta_label = QLabel(meta_str)
+        self.meta_label.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.meta_label.setStyleSheet(
+            "background: transparent; border: none; color: #a1a1aa; font-size: 11px;"
+        )
+        text_layout.addWidget(self.meta_label)
+
+        layout.addLayout(text_layout, stretch=1)
+
+        # Pointer chevron indicator
+        chevron = QLabel("›")
+        chevron.setStyleSheet("color: #71717a; font-size: 18px; font-weight: bold; background: transparent;")
+        layout.addWidget(chevron)
+
+    def set_selected(self, selected: bool):
+        self.is_selected = selected
+        self._update_style()
+
+    def _update_style(self):
+        if self.is_selected:
+            self.setStyleSheet(
+                """
+                FolderCardWidget {
+                    background-color: #1a2c42;
+                    border: 1px solid #3b82f6;
+                    border-radius: 8px;
+                }
+                """
+            )
+        else:
+            self.setStyleSheet(
+                """
+                FolderCardWidget {
+                    background-color: #202024;
+                    border: 1px solid #333338;
+                    border-radius: 8px;
+                }
+                FolderCardWidget:hover {
+                    background-color: #27272e;
+                    border-color: #4b4b54;
+                }
+                """
+            )
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.folder_clicked.emit(self.folder_data)
+        super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.folder_double_clicked.emit(self.folder_data)
+        super().mouseDoubleClickEvent(event)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasFormat("application/x-telecup-file"):
+            self.set_selected(True)
+            event.acceptProposedAction()
+        else:
+            super().dragEnterEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self.set_selected(False)
+        super().dragLeaveEvent(event)
+
+    def dropEvent(self, event: QDropEvent):
+        self.set_selected(False)
+        if event.mimeData().hasFormat("application/x-telecup-file"):
+            file_id = int(event.mimeData().data("application/x-telecup-file").data().decode("utf-8"))
+            self.file_dropped_here.emit(file_id, self.folder_data["id"])
+            event.acceptProposedAction()
+
+
 class FileCardWidget(QFrame):
-    """Flexible card with drag support to sidebar folders and 100% transparent label backgrounds."""
+    """Flexible card with drag support to sidebar/folders and 100% transparent label backgrounds."""
 
     card_clicked = Signal(dict)
     card_double_clicked = Signal(dict)
@@ -103,13 +270,13 @@ class FileCardWidget(QFrame):
 
         # 2. File Name (100% transparent background)
         fav_tag = "[Fav] " if self.file_data.get("is_fav") else ""
-        name_text = f"{fav_tag}{self.file_data['name']}"
-        self.name_label = QLabel(name_text)
+        safe_name = f"{fav_tag}{self.file_data['name']}".replace("&", "&&")
+        self.name_label = QLabel(safe_name)
         self.name_label.setAttribute(Qt.WA_TranslucentBackground, True)
         self.name_label.setWordWrap(True)
         self.name_label.setAlignment(Qt.AlignCenter)
         self.name_label.setStyleSheet(
-            "background: transparent; background-color: transparent; border: none; color: #f4f4f5; font-size: 11px; font-weight: 500;"
+            "background: transparent; border: none; color: #f4f4f5; font-size: 11px; font-weight: 500;"
         )
         layout.addWidget(self.name_label)
 
@@ -120,7 +287,7 @@ class FileCardWidget(QFrame):
         meta_label.setAttribute(Qt.WA_TranslucentBackground, True)
         meta_label.setAlignment(Qt.AlignCenter)
         meta_label.setStyleSheet(
-            "background: transparent; background-color: transparent; border: none; color: #a1a1aa; font-size: 10px;"
+            "background: transparent; border: none; color: #a1a1aa; font-size: 10px;"
         )
         layout.addWidget(meta_label)
 
@@ -139,7 +306,6 @@ class FileCardWidget(QFrame):
                 }
                 FileCardWidget QLabel {
                     background: transparent;
-                    background-color: transparent;
                     border: none;
                 }
                 """
@@ -158,7 +324,6 @@ class FileCardWidget(QFrame):
                 }
                 FileCardWidget QLabel {
                     background: transparent;
-                    background-color: transparent;
                     border: none;
                 }
                 """
@@ -197,19 +362,23 @@ class FileCardWidget(QFrame):
 
 
 class FileGridWidget(QWidget):
-    """File display area rendering SQLite data with responsive layout, breadcrumb navigation, and DB signals."""
+    """File & Folder display area rendering child folder cards, file cards, and breadcrumb bar."""
 
     file_opened = Signal(dict)
-    breadcrumb_navigated = Signal(str, str)  # (type: 'category'|'folder', val: path)
+    folder_navigated = Signal(int, str)  # (folder_id, full_path)
+    file_dropped_on_folder = Signal(int, int)  # (file_id, folder_id)
+    breadcrumb_navigated = Signal(str, str)
     toggle_favorite_requested = Signal(int)
     delete_file_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.displayed_folders: List[Dict[str, Any]] = []
         self.displayed_files: List[Dict[str, Any]] = []
         self.current_location = ("category", "all")
+        self.folder_widgets: List[FolderCardWidget] = []
         self.card_widgets: List[FileCardWidget] = []
-        self.selected_card: Optional[dict] = None
+        self.header_widgets: List[QWidget] = []
 
         self._init_ui()
 
@@ -257,7 +426,7 @@ class FileGridWidget(QWidget):
         self.list_view = QTableWidget()
         self.list_view.setColumnCount(5)
         self.list_view.setHorizontalHeaderLabels([
-            "Name", "Category", "Size", "Date Added", "Telegram Source"
+            "Name", "Category / Type", "Size", "Date Added", "Telegram Source"
         ])
         self.list_view.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.list_view.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
@@ -311,8 +480,8 @@ class FileGridWidget(QWidget):
         self._recalculate_grid_columns()
 
     def _recalculate_grid_columns(self):
-        """Auto-calculate columns and stretch cards flexibly across available width."""
-        if not self.card_widgets:
+        """Auto-calculate columns and layout folder cards and file cards seamlessly."""
+        if not self.folder_widgets and not self.card_widgets:
             return
 
         viewport_w = self.scroll_area.viewport().width()
@@ -323,30 +492,77 @@ class FileGridWidget(QWidget):
         available = max(min_card_w, viewport_w - padding)
         cols = max(1, available // (min_card_w + gap))
 
+        # Clear stretches
         for c in range(12):
             self.grid_layout.setColumnStretch(c, 0)
 
-        for idx, card in enumerate(self.card_widgets):
-            self.grid_layout.removeWidget(card)
-            row = idx // cols
-            col = idx % cols
-            self.grid_layout.addWidget(card, row, col)
+        curr_row = 0
+
+        # ── Section 1: Subfolders (if any exist) ──
+        if self.folder_widgets:
+            if self.card_widgets:
+                sec_label = QLabel("FOLDERS")
+                sec_label.setStyleSheet("color: #71717a; font-weight: 700; font-size: 11px; padding: 4px 0px;")
+                self.grid_layout.addWidget(sec_label, curr_row, 0, 1, cols)
+                self.header_widgets.append(sec_label)
+                curr_row += 1
+
+            for idx, f_card in enumerate(self.folder_widgets):
+                self.grid_layout.removeWidget(f_card)
+                r = curr_row + (idx // cols)
+                c = idx % cols
+                self.grid_layout.addWidget(f_card, r, c)
+
+            curr_row += (len(self.folder_widgets) + cols - 1) // cols
+
+        # ── Section 2: Files (if any exist) ──
+        if self.card_widgets:
+            if self.folder_widgets:
+                sec_label = QLabel("FILES")
+                sec_label.setStyleSheet("color: #71717a; font-weight: 700; font-size: 11px; padding: 12px 0px 4px 0px;")
+                self.grid_layout.addWidget(sec_label, curr_row, 0, 1, cols)
+                self.header_widgets.append(sec_label)
+                curr_row += 1
+
+            for idx, card in enumerate(self.card_widgets):
+                self.grid_layout.removeWidget(card)
+                r = curr_row + (idx // cols)
+                c = idx % cols
+                self.grid_layout.addWidget(card, r, c)
 
         for c in range(cols):
             self.grid_layout.setColumnStretch(c, 1)
 
-    def set_files(self, files: List[Dict[str, Any]]):
-        """Load and display files queried directly from SQLite database."""
+    def set_data(self, subfolders: List[Dict[str, Any]], files: List[Dict[str, Any]]):
+        """Load and display child folders AND files queried from SQLite."""
+        self.displayed_folders = subfolders
         self.displayed_files = files
 
-        # 1. Clear previous cards
+        # 1. Clear previous items & headers
+        for w in self.header_widgets:
+            self.grid_layout.removeWidget(w)
+            w.deleteLater()
+        self.header_widgets.clear()
+
+        for f_card in self.folder_widgets:
+            self.grid_layout.removeWidget(f_card)
+            f_card.deleteLater()
+        self.folder_widgets.clear()
+
         for card in self.card_widgets:
             self.grid_layout.removeWidget(card)
             card.deleteLater()
         self.card_widgets.clear()
-        self.selected_card = None
 
-        # 2. Build cards from SQLite records
+        # 2. Build Folder Cards
+        for f in self.displayed_folders:
+            f_card = FolderCardWidget(f)
+            f_card.folder_clicked.connect(self._on_folder_clicked)
+            f_card.folder_double_clicked.connect(self._on_folder_double_clicked)
+            f_card.file_dropped_here.connect(self.file_dropped_on_folder.emit)
+            self.folder_widgets.append(f_card)
+
+        # 3. Build File Cards
         for f in self.displayed_files:
             card = FileCardWidget(f)
             card.card_clicked.connect(self._on_card_clicked)
@@ -356,20 +572,35 @@ class FileGridWidget(QWidget):
 
         self._recalculate_grid_columns()
 
-        # 3. Populate List View
-        self.list_view.setRowCount(len(self.displayed_files))
-        for row, f in enumerate(self.displayed_files):
-            fav_tag = "[Fav] " if f.get("is_fav") else ""
-            name_item = QTableWidgetItem(f"{fav_tag}{f['name']}")
-            name_item.setData(Qt.UserRole, f)
+        # 4. Populate List View (combines folders on top, then files)
+        total_rows = len(self.displayed_folders) + len(self.displayed_files)
+        self.list_view.setRowCount(total_rows)
 
+        row_idx = 0
+        for f in self.displayed_folders:
+            safe_name = f["name"].replace("&", "&&")
+            name_item = QTableWidgetItem(f"[Folder]  {safe_name}")
+            name_item.setData(Qt.UserRole, {"type": "folder", "data": f})
+            type_item = QTableWidgetItem("Folder")
+            size_item = QTableWidgetItem("-")
+            date_item = QTableWidgetItem("-")
+            source_item = QTableWidgetItem(f["path"])
+            for col, item in enumerate([name_item, type_item, size_item, date_item, source_item]):
+                self.list_view.setItem(row_idx, col, item)
+            row_idx += 1
+
+        for f in self.displayed_files:
+            fav_tag = "[Fav] " if f.get("is_fav") else ""
+            safe_name = f"{fav_tag}{f['name']}".replace("&", "&&")
+            name_item = QTableWidgetItem(safe_name)
+            name_item.setData(Qt.UserRole, {"type": "file", "data": f})
             cat_item = QTableWidgetItem(f["category"].capitalize())
             size_item = QTableWidgetItem(f["size_str"])
             date_item = QTableWidgetItem(f.get("date_added", f.get("date", "")))
             msg_item = QTableWidgetItem(f.get("message", ""))
-
             for col, item in enumerate([name_item, cat_item, size_item, date_item, msg_item]):
-                self.list_view.setItem(row, col, item)
+                self.list_view.setItem(row_idx, col, item)
+            row_idx += 1
 
         # Refresh breadcrumb counter
         item_type, val = self.current_location
@@ -381,10 +612,20 @@ class FileGridWidget(QWidget):
         else:
             self.stack.setCurrentIndex(1)
 
+    def _on_folder_clicked(self, folder_data: dict):
+        for f_card in self.folder_widgets:
+            f_card.set_selected(f_card.folder_data["id"] == folder_data["id"])
+        for card in self.card_widgets:
+            card.set_selected(False)
+
+    def _on_folder_double_clicked(self, folder_data: dict):
+        self.folder_navigated.emit(folder_data["id"], folder_data["path"])
+
     def _on_card_clicked(self, file_data: dict):
         for card in self.card_widgets:
             card.set_selected(card.file_data["id"] == file_data["id"])
-        self.selected_card = file_data
+        for f_card in self.folder_widgets:
+            f_card.set_selected(False)
 
     def _on_card_double_click(self, file_data: dict):
         self.file_opened.emit(file_data)
@@ -396,18 +637,25 @@ class FileGridWidget(QWidget):
 
     def _on_table_double_click(self, row: int, col: int):
         item = self.list_view.item(row, 0)
-        if item:
-            file_data = item.data(Qt.UserRole)
-            if file_data:
-                self.file_opened.emit(file_data)
-                self._show_info(file_data)
+        if not item:
+            return
+        u_data = item.data(Qt.UserRole)
+        if not u_data:
+            return
+
+        if u_data["type"] == "folder":
+            self.folder_navigated.emit(u_data["data"]["id"], u_data["data"]["path"])
+        else:
+            file_data = u_data["data"]
+            self.file_opened.emit(file_data)
+            self._show_info(file_data)
 
     def _open_table_context_menu(self, pos):
         item = self.list_view.item(self.list_view.currentRow(), 0)
         if item:
-            file_data = item.data(Qt.UserRole)
-            if file_data:
-                self._show_context_menu(file_data, self.list_view.viewport().mapToGlobal(pos))
+            u_data = item.data(Qt.UserRole)
+            if u_data and u_data["type"] == "file":
+                self._show_context_menu(u_data["data"], self.list_view.viewport().mapToGlobal(pos))
 
     def _show_context_menu(self, file_data: dict, global_pos: QPoint):
         menu = QMenu(self)
@@ -498,13 +746,13 @@ class FileGridWidget(QWidget):
 
         if extra_label:
             self._add_separator()
-            label = QLabel(extra_label)
+            label = QLabel(extra_label.replace("&", "&&"))
             label.setStyleSheet("color: #ffffff; font-size: 13px; font-weight: 600;")
             self.breadcrumb_layout.addWidget(label)
         elif item_type == "category":
             self._add_separator()
             cat_display = "All Files" if val == "all" else val.capitalize()
-            label = QLabel(cat_display)
+            label = QLabel(cat_display.replace("&", "&&"))
             label.setStyleSheet("color: #ffffff; font-size: 13px; font-weight: 600;")
             self.breadcrumb_layout.addWidget(label)
         elif item_type == "folder":
@@ -516,12 +764,13 @@ class FileGridWidget(QWidget):
                 curr_path = " / ".join(accum)
                 is_last = (i == len(parts) - 1)
 
+                safe_part = part.replace("&", "&&")
                 if is_last:
-                    leaf_label = QLabel(part)
+                    leaf_label = QLabel(safe_part)
                     leaf_label.setStyleSheet("color: #ffffff; font-size: 13px; font-weight: 600;")
                     self.breadcrumb_layout.addWidget(leaf_label)
                 else:
-                    crumb_btn = QPushButton(part)
+                    crumb_btn = QPushButton(safe_part)
                     crumb_btn.setCursor(Qt.PointingHandCursor)
                     crumb_btn.setStyleSheet(
                         """
@@ -543,7 +792,16 @@ class FileGridWidget(QWidget):
                     self.breadcrumb_layout.addWidget(crumb_btn)
 
         self.breadcrumb_layout.addStretch(1)
-        count_label = QLabel(f"{len(self.displayed_files)} item(s)")
+
+        # Counter text
+        counts = []
+        if self.displayed_folders:
+            counts.append(f"{len(self.displayed_folders)} folder(s)")
+        if self.displayed_files:
+            counts.append(f"{len(self.displayed_files)} file(s)")
+        count_str = ", ".join(counts) if counts else "0 items"
+
+        count_label = QLabel(count_str)
         count_label.setStyleSheet("color: #71717a; font-size: 12px; padding-right: 4px;")
         self.breadcrumb_layout.addWidget(count_label)
 
