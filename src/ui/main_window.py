@@ -1,5 +1,6 @@
-"""Main application window for TeleCup with unified dark styling, breadcrumbs, and drag & drop support."""
+"""Main application window connecting SQLite Database to PySide6 UI."""
 
+from typing import Optional
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -11,13 +12,14 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from ..database import DatabaseManager
 from .sidebar import SidebarWidget
 from .toolbar import ToolbarWidget
 from .file_grid import FileGridWidget
 
 
 class MainWindow(QMainWindow):
-    """Main window coordinating sidebar, toolbar, file grid, and status bar."""
+    """Main window coordinating SQLite database with UI widgets."""
 
     def __init__(self):
         super().__init__()
@@ -25,8 +27,22 @@ class MainWindow(QMainWindow):
         self.resize(1160, 720)
         self.setMinimumSize(900, 560)
 
+        # 1. Initialize SQLite Database
+        self.db = DatabaseManager()
+
+        # 2. State Tracking
+        self.current_category: Optional[str] = "all"
+        self.current_folder_id: Optional[int] = None
+        self.current_folder_path: str = ""
+        self.current_search: str = ""
+        self.current_sort: str = "date_desc"
+
+        # 3. Build UI & Wire Signals
         self._init_ui()
         self._connect_signals()
+
+        # 4. Initial Load from SQLite
+        self._refresh_vault()
 
     def _init_ui(self):
         self.setStyleSheet(
@@ -69,7 +85,7 @@ class MainWindow(QMainWindow):
             """
         )
 
-        self.sidebar = SidebarWidget(self)
+        self.sidebar = SidebarWidget(self.db, self)
         self.sidebar.setStyleSheet("background-color: #141416; border-right: 1px solid #27272a;")
         self.file_grid = FileGridWidget(self)
 
@@ -96,56 +112,115 @@ class MainWindow(QMainWindow):
         )
         self.setStatusBar(self.status_bar)
 
-        self.status_label = QLabel("Ready | 6 files in local vault")
+        self.status_label = QLabel("Loading vault...")
         self.status_label.setStyleSheet("color: #a1a1aa;")
         self.status_bar.addWidget(self.status_label)
 
-        self.sync_status_label = QLabel("Telegram: Configured (ready to link)")
+        self.sync_status_label = QLabel("Database: SQLite Connected")
         self.sync_status_label.setStyleSheet("color: #3b82f6; font-weight: 500; margin-right: 12px;")
         self.status_bar.addPermanentWidget(self.sync_status_label)
 
     def _connect_signals(self):
-        # Sidebar to File Grid
+        # Sidebar Events
         self.sidebar.category_selected.connect(self._on_category_selected)
         self.sidebar.folder_selected.connect(self._on_folder_selected)
         self.sidebar.sync_requested.connect(self._on_sync_requested)
-        self.sidebar.file_dropped_on_folder.connect(self.file_grid.move_file_to_folder)
+        self.sidebar.file_dropped_on_folder.connect(self._on_file_dropped_on_folder)
 
-        # File Grid events
+        # File Grid Events
         self.file_grid.breadcrumb_navigated.connect(self._on_breadcrumb_navigated)
-        self.file_grid.file_relocated.connect(self._on_file_relocated)
+        self.file_grid.toggle_favorite_requested.connect(self._on_toggle_favorite)
+        self.file_grid.delete_file_requested.connect(self._on_delete_file)
 
-        # Toolbar controls
-        self.toolbar.search_changed.connect(self.file_grid.filter_by_search)
+        # Toolbar Events
+        self.toolbar.search_changed.connect(self._on_search_changed)
         self.toolbar.view_mode_changed.connect(self.file_grid.set_view_mode)
-        self.toolbar.sort_changed.connect(self.file_grid.sort_files)
+        self.toolbar.sort_changed.connect(self._on_sort_changed)
         self.toolbar.sync_requested.connect(self._on_sync_requested)
 
-    def _on_category_selected(self, category: str):
-        self.file_grid.filter_by_category(category)
-        count = len(self.file_grid.displayed_files)
-        self.status_label.setText(f"Category: {category.capitalize()} | {count} file(s)")
+    def _refresh_vault(self):
+        """Query SQLite database with current filters and refresh display."""
+        files = self.db.get_files(
+            category=self.current_category,
+            folder_id=self.current_folder_id,
+            search_query=self.current_search,
+            sort_key=self.current_sort,
+        )
+        self.file_grid.set_files(files)
 
-    def _on_folder_selected(self, folder_name: str):
-        self.file_grid.filter_by_folder(folder_name)
-        count = len(self.file_grid.displayed_files)
-        self.status_label.setText(f"Folder: {folder_name} | {count} file(s)")
+        # Update Status Bar Text
+        count = len(files)
+        if self.current_search:
+            self.status_label.setText(f'Search: "{self.current_search}" | {count} file(s) found')
+        elif self.current_folder_id is not None:
+            self.status_label.setText(f"Folder: {self.current_folder_path} | {count} file(s)")
+        else:
+            cat_name = "All Files" if self.current_category == "all" else (self.current_category or "").capitalize()
+            self.status_label.setText(f"Category: {cat_name} | {count} file(s)")
+
+    def _on_category_selected(self, category_key: str):
+        self.current_category = category_key
+        self.current_folder_id = None
+        self.current_folder_path = ""
+        self.file_grid.update_breadcrumb("category", category_key)
+        self._refresh_vault()
+
+    def _on_folder_selected(self, folder_id: int, full_path: str):
+        self.current_category = None
+        self.current_folder_id = folder_id
+        self.current_folder_path = full_path
+        self.file_grid.update_breadcrumb("folder", full_path)
+        self._refresh_vault()
+
+    def _on_file_dropped_on_folder(self, file_id: int, target_folder_id: int):
+        self.db.move_file_to_folder(file_id, target_folder_id)
+        folder_path = self.db.get_folder_path(target_folder_id)
+        self.status_label.setText(f"Moved file ID {file_id} to folder '{folder_path}' (Saved in SQLite)")
+        self._refresh_vault()
+
+    def _on_search_changed(self, query: str):
+        self.current_search = query.strip()
+        if self.current_search:
+            self.file_grid.update_breadcrumb("search", self.current_search, extra_label=f'Search: "{self.current_search}"')
+        else:
+            if self.current_folder_id is not None:
+                self.file_grid.update_breadcrumb("folder", self.current_folder_path)
+            else:
+                self.file_grid.update_breadcrumb("category", self.current_category or "all")
+        self._refresh_vault()
+
+    def _on_sort_changed(self, sort_key: str):
+        self.current_sort = sort_key
+        self._refresh_vault()
+
+    def _on_toggle_favorite(self, file_id: int):
+        new_state = self.db.toggle_favorite(file_id)
+        state_str = "added to" if new_state else "removed from"
+        self.status_label.setText(f"File {state_str} Favorites (Saved in SQLite)")
+        self._refresh_vault()
+
+    def _on_delete_file(self, file_id: int):
+        self.db.delete_file(file_id)
+        self.status_label.setText(f"File ID {file_id} removed from vault.")
+        self._refresh_vault()
 
     def _on_breadcrumb_navigated(self, item_type: str, path_val: str):
-        self.sidebar.select_by_path(path_val)
         if item_type == "category":
+            self.sidebar.select_category_by_key(path_val)
             self._on_category_selected(path_val)
-        else:
-            self._on_folder_selected(path_val)
-
-    def _on_file_relocated(self, file_data: dict, target_folder: str):
-        self.status_label.setText(f"Moved '{file_data['name']}' to '{target_folder}'")
+        elif item_type == "folder":
+            # Find folder ID matching path
+            for f in self.db.get_all_folders():
+                if self.db.get_folder_path(f["id"]) == path_val:
+                    self.sidebar.select_folder_by_id(f["id"])
+                    self._on_folder_selected(f["id"], path_val)
+                    break
 
     def _on_sync_requested(self):
         QMessageBox.information(
             self,
             "Sync Telegram",
             "Telegram sync requested.\n\n"
-            "Kredensial Telegram sudah terdeteksi di config/settings.json.\n"
-            "Di Langkah 4, tombol ini akan menghubungkan sesi Telethon Anda dan mengunduh pesan terbaru dari Saved Messages.",
+            "Database SQLite (storage/vault.db) sudah aktif dan siap menampung data.\n"
+            "Di Langkah 4, modul telethon akan dihubungkan untuk menyinkronkan Saved Messages secara riil.",
         )

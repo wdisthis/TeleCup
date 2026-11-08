@@ -1,5 +1,6 @@
-"""Responsive file grid with flexible-width cards, drag-and-drop to folders, transparent text labels, and breadcrumbs."""
+"""Responsive file grid with flexible-width cards, drag-and-drop, SQLite event hooks, and breadcrumbs."""
 
+from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
     QWidget,
     QFrame,
@@ -23,7 +24,7 @@ from PySide6.QtGui import QIcon, QPixmap, QPainter, QColor, QFont, QDrag
 
 
 def create_file_badge_icon(ext: str, bg_hex: str = "#475569") -> QIcon:
-    """Generate a crisp file badge icon."""
+    """Generate crisp file badge without external image assets."""
     width = 42
     height = 42
     pixmap = QPixmap(width, height)
@@ -61,7 +62,7 @@ BADGE_COLORS = {
 
 
 class FileCardWidget(QFrame):
-    """Flexible card with drag support (drag to sidebar folders) and 100% transparent label backgrounds."""
+    """Flexible card with drag support to sidebar folders and 100% transparent label backgrounds."""
 
     card_clicked = Signal(dict)
     card_double_clicked = Signal(dict)
@@ -100,7 +101,7 @@ class FileCardWidget(QFrame):
         icon_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(icon_label, alignment=Qt.AlignCenter)
 
-        # 2. File Name (100% Transparent background, no dark patches)
+        # 2. File Name (100% transparent background)
         fav_tag = "[Fav] " if self.file_data.get("is_fav") else ""
         name_text = f"{fav_tag}{self.file_data['name']}"
         self.name_label = QLabel(name_text)
@@ -113,7 +114,7 @@ class FileCardWidget(QFrame):
         layout.addWidget(self.name_label)
 
         # 3. Meta (Size | Date)
-        date_short = self.file_data["date"].split()[0]
+        date_short = self.file_data.get("date_added", self.file_data.get("date", "")).split()[0]
         meta_text = f"{self.file_data['size_str']}  |  {date_short}"
         meta_label = QLabel(meta_text)
         meta_label.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -172,7 +173,6 @@ class FileCardWidget(QFrame):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
-        # Controlled drag-and-drop: can drag to move into folders, but stays aligned in grid
         if event.buttons() & Qt.LeftButton and self.drag_start_pos:
             distance = (event.position().toPoint() - self.drag_start_pos).manhattanLength()
             if distance >= QApplication.startDragDistance():
@@ -182,7 +182,6 @@ class FileCardWidget(QFrame):
                 mime.setText(self.file_data["name"])
                 drag.setMimeData(mime)
 
-                # Semi-transparent ghost preview following the cursor
                 ghost = self.grab()
                 drag.setPixmap(ghost)
                 drag.setHotSpot(self.drag_start_pos)
@@ -198,22 +197,21 @@ class FileCardWidget(QFrame):
 
 
 class FileGridWidget(QWidget):
-    """Main file view with flexible-width responsive cards, breadcrumbs, and folder drop handling."""
+    """File display area rendering SQLite data with responsive layout, breadcrumb navigation, and DB signals."""
 
     file_opened = Signal(dict)
-    breadcrumb_navigated = Signal(str, str)
-    file_relocated = Signal(dict, str)
+    breadcrumb_navigated = Signal(str, str)  # (type: 'category'|'folder', val: path)
+    toggle_favorite_requested = Signal(int)
+    delete_file_requested = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.all_files = []
-        self.displayed_files = []
+        self.displayed_files: List[Dict[str, Any]] = []
         self.current_location = ("category", "all")
-        self.card_widgets = []
-        self.selected_card = None
+        self.card_widgets: List[FileCardWidget] = []
+        self.selected_card: Optional[dict] = None
 
         self._init_ui()
-        self._load_dummy_data()
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -231,7 +229,7 @@ class FileGridWidget(QWidget):
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
 
-        # ── Responsive Grid with Flexible-Width Cards ──
+        # Responsive Grid
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setStyleSheet(
@@ -255,7 +253,7 @@ class FileGridWidget(QWidget):
         self.scroll_area.setWidget(self.grid_content)
         self.stack.addWidget(self.scroll_area)  # index 0
 
-        # ── List View ──
+        # List View
         self.list_view = QTableWidget()
         self.list_view.setColumnCount(5)
         self.list_view.setHorizontalHeaderLabels([
@@ -313,7 +311,7 @@ class FileGridWidget(QWidget):
         self._recalculate_grid_columns()
 
     def _recalculate_grid_columns(self):
-        """Auto-calculate columns and stretch cards flexibly to fill the entire row width."""
+        """Auto-calculate columns and stretch cards flexibly across available width."""
         if not self.card_widgets:
             return
 
@@ -325,11 +323,9 @@ class FileGridWidget(QWidget):
         available = max(min_card_w, viewport_w - padding)
         cols = max(1, available // (min_card_w + gap))
 
-        # Clear existing column stretches
         for c in range(12):
             self.grid_layout.setColumnStretch(c, 0)
 
-        # Distribute cards in grid and set column stretch so they fill the width evenly
         for idx, card in enumerate(self.card_widgets):
             self.grid_layout.removeWidget(card)
             row = idx // cols
@@ -339,13 +335,18 @@ class FileGridWidget(QWidget):
         for c in range(cols):
             self.grid_layout.setColumnStretch(c, 1)
 
-    def refresh_display(self):
+    def set_files(self, files: List[Dict[str, Any]]):
+        """Load and display files queried directly from SQLite database."""
+        self.displayed_files = files
+
+        # 1. Clear previous cards
         for card in self.card_widgets:
             self.grid_layout.removeWidget(card)
             card.deleteLater()
         self.card_widgets.clear()
         self.selected_card = None
 
+        # 2. Build cards from SQLite records
         for f in self.displayed_files:
             card = FileCardWidget(f)
             card.card_clicked.connect(self._on_card_clicked)
@@ -355,7 +356,7 @@ class FileGridWidget(QWidget):
 
         self._recalculate_grid_columns()
 
-        # Update List View
+        # 3. Populate List View
         self.list_view.setRowCount(len(self.displayed_files))
         for row, f in enumerate(self.displayed_files):
             fav_tag = "[Fav] " if f.get("is_fav") else ""
@@ -364,29 +365,21 @@ class FileGridWidget(QWidget):
 
             cat_item = QTableWidgetItem(f["category"].capitalize())
             size_item = QTableWidgetItem(f["size_str"])
-            date_item = QTableWidgetItem(f["date"])
-            msg_item = QTableWidgetItem(f["message"])
+            date_item = QTableWidgetItem(f.get("date_added", f.get("date", "")))
+            msg_item = QTableWidgetItem(f.get("message", ""))
 
             for col, item in enumerate([name_item, cat_item, size_item, date_item, msg_item]):
                 self.list_view.setItem(row, col, item)
 
-    def move_file_to_folder(self, file_id: int, target_folder: str):
-        """Handle moving a file to a new virtual folder (from drag & drop)."""
-        target_file = None
-        for f in self.all_files:
-            if f["id"] == file_id:
-                f["folder"] = target_folder
-                target_file = f
-                break
+        # Refresh breadcrumb counter
+        item_type, val = self.current_location
+        self.update_breadcrumb(item_type, val)
 
-        if target_file:
-            # Re-filter and refresh
-            item_type, val = self.current_location
-            if item_type == "category":
-                self.filter_by_category(val)
-            else:
-                self.filter_by_folder(val)
-            self.file_relocated.emit(target_file, target_folder)
+    def set_view_mode(self, mode: str):
+        if mode == "grid":
+            self.stack.setCurrentIndex(0)
+        else:
+            self.stack.setCurrentIndex(1)
 
     def _on_card_clicked(self, file_data: dict):
         for card in self.card_widgets:
@@ -424,11 +417,11 @@ class FileGridWidget(QWidget):
                 background-color: #222226;
                 color: #e4e4e7;
                 border: 1px solid #333338;
-                padding: 4px;
+                padding: 6px;
                 border-radius: 6px;
             }
             QMenu::item {
-                padding: 6px 16px;
+                padding: 7px 18px;
                 border-radius: 4px;
             }
             QMenu::item:selected {
@@ -444,19 +437,34 @@ class FileGridWidget(QWidget):
         )
         open_action = menu.addAction("Open / Preview")
         show_action = menu.addAction("Show in Explorer")
-        fav_action = menu.addAction("Toggle Favorite")
+        
+        fav_label = "Remove from Favorites" if file_data.get("is_fav") else "Add to Favorites"
+        fav_action = menu.addAction(fav_label)
+        
         menu.addSeparator()
-        delete_action = menu.addAction("Remove from Vault")
+        delete_action = menu.addAction("Delete from Vault")
 
         action = menu.exec(global_pos)
         if action == open_action:
             self._show_info(file_data)
+        elif action == fav_action:
+            self.toggle_favorite_requested.emit(file_data["id"])
+        elif action == delete_action:
+            confirm = QMessageBox.question(
+                self,
+                "Delete File",
+                f"Remove '{file_data['name']}' from TeleCup Vault?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if confirm == QMessageBox.Yes:
+                self.delete_file_requested.emit(file_data["id"])
 
     def _show_info(self, file_data: dict):
+        folder_display = file_data.get("folder") or "Unassigned"
         QMessageBox.information(
             self,
             "File Details",
-            f"File: {file_data['name']}\nSize: {file_data['size_str']}\nTelegram Ref: {file_data['message']}\nFolder: {file_data.get('folder', '-')}\n\n(Local file preview & open will be connected in Step 3)",
+            f"File: {file_data['name']}\nSize: {file_data['size_str']}\nTelegram Ref: {file_data.get('message', '-')}\nFolder: {folder_display}\n\n(Local file preview & open will be connected in Step 4)",
         )
 
     def update_breadcrumb(self, item_type: str, val: str, extra_label: str = None):
@@ -500,7 +508,7 @@ class FileGridWidget(QWidget):
             label.setStyleSheet("color: #ffffff; font-size: 13px; font-weight: 600;")
             self.breadcrumb_layout.addWidget(label)
         elif item_type == "folder":
-            parts = val.split(" / ")
+            parts = val.split(" / ") if val else []
             accum = []
             for i, part in enumerate(parts):
                 self._add_separator()
@@ -543,132 +551,3 @@ class FileGridWidget(QWidget):
         sep = QLabel("›")
         sep.setStyleSheet("color: #52525b; font-size: 14px; font-weight: bold;")
         self.breadcrumb_layout.addWidget(sep)
-
-    def set_view_mode(self, mode: str):
-        if mode == "grid":
-            self.stack.setCurrentIndex(0)
-        else:
-            self.stack.setCurrentIndex(1)
-
-    def _load_dummy_data(self):
-        self.all_files = [
-            {
-                "id": 1,
-                "name": "Python_CheatSheet_v2.pdf",
-                "ext": "pdf",
-                "category": "documents",
-                "size_str": "2.4 MB",
-                "size_bytes": 2516582,
-                "date": "2026-10-28 14:20",
-                "message": "#1042 - Quick Python Guide",
-                "folder": "Learning & E-books",
-                "is_fav": True,
-            },
-            {
-                "id": 2,
-                "name": "Server_Architecture_Diagram.png",
-                "ext": "png",
-                "category": "images",
-                "size_str": "1.8 MB",
-                "size_bytes": 1887436,
-                "date": "2026-10-27 09:12",
-                "message": "#1039 - Diagram final",
-                "folder": "Work Projects / 2026 / Q4 Deliverables",
-                "is_fav": False,
-            },
-            {
-                "id": 3,
-                "name": "Backup_Database_Postgres.zip",
-                "ext": "zip",
-                "category": "archives",
-                "size_str": "14.5 MB",
-                "size_bytes": 15204352,
-                "date": "2026-10-25 18:00",
-                "message": "#1025 - DB Dump",
-                "folder": "Work Projects / 2026",
-                "is_fav": False,
-            },
-            {
-                "id": 4,
-                "name": "Meeting_Audio_Transcript.mp3",
-                "ext": "mp3",
-                "category": "media",
-                "size_str": "8.2 MB",
-                "size_bytes": 8598323,
-                "date": "2026-10-24 11:30",
-                "message": "#1010 - Voice note recording",
-                "folder": "Work Projects / Client Reviews",
-                "is_fav": True,
-            },
-            {
-                "id": 5,
-                "name": "Receipt_Hosting_AWS_Oct26.pdf",
-                "ext": "pdf",
-                "category": "documents",
-                "size_str": "420 KB",
-                "size_bytes": 430080,
-                "date": "2026-10-20 08:45",
-                "message": "#980 - Server invoice",
-                "folder": "Receipts & Finance / Tax 2026",
-                "is_fav": False,
-            },
-            {
-                "id": 6,
-                "name": "App_Demo_Walkthrough.mp4",
-                "ext": "mp4",
-                "category": "media",
-                "size_str": "35.1 MB",
-                "size_bytes": 36805017,
-                "date": "2026-10-18 20:15",
-                "message": "#964 - Demo testing video",
-                "folder": "Learning & E-books",
-                "is_fav": False,
-            },
-        ]
-        self.displayed_files = list(self.all_files)
-        self.refresh_display()
-
-    def filter_by_category(self, category: str):
-        if category == "all":
-            self.displayed_files = list(self.all_files)
-        elif category == "favorites":
-            self.displayed_files = [f for f in self.all_files if f.get("is_fav")]
-        else:
-            self.displayed_files = [f for f in self.all_files if f.get("category") == category]
-        self.update_breadcrumb("category", category)
-        self.refresh_display()
-
-    def filter_by_folder(self, folder_path: str):
-        self.displayed_files = [
-            f for f in self.all_files
-            if f.get("folder", "") == folder_path or f.get("folder", "").startswith(f"{folder_path} /")
-        ]
-        self.update_breadcrumb("folder", folder_path)
-        self.refresh_display()
-
-    def filter_by_search(self, query: str):
-        query = query.strip().lower()
-        if not query:
-            item_type, val = self.current_location
-            if item_type == "category":
-                self.filter_by_category(val)
-            else:
-                self.filter_by_folder(val)
-        else:
-            self.displayed_files = [
-                f for f in self.all_files
-                if query in f["name"].lower() or query in f["message"].lower()
-            ]
-            self.update_breadcrumb("search", query, extra_label=f'Search: "{query}"')
-            self.refresh_display()
-
-    def sort_files(self, sort_key: str):
-        if sort_key == "name_asc":
-            self.displayed_files.sort(key=lambda x: x["name"].lower())
-        elif sort_key == "date_desc":
-            self.displayed_files.sort(key=lambda x: x["date"], reverse=True)
-        elif sort_key == "date_asc":
-            self.displayed_files.sort(key=lambda x: x["date"])
-        elif sort_key == "size_desc":
-            self.displayed_files.sort(key=lambda x: x["size_bytes"], reverse=True)
-        self.refresh_display()
