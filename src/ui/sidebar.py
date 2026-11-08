@@ -1,7 +1,7 @@
-"""Sidebar component with drag-and-drop folder receiving, balanced '+ New' button, and nested subfolders."""
+"""Sidebar component with high-visibility drag-and-drop folder target highlighting and auto-expansion."""
 
-import os
 from pathlib import Path
+from typing import Optional, Dict
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -14,8 +14,21 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
 )
-from PySide6.QtCore import Qt, Signal, QSize, QPointF
-from PySide6.QtGui import QFont, QIcon, QPixmap, QPainter, QColor, QPen, QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtCore import Qt, Signal, QSize, QPointF, QTimer
+from PySide6.QtGui import (
+    QFont,
+    QIcon,
+    QPixmap,
+    QPainter,
+    QColor,
+    QPen,
+    QCursor,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
+)
+
+from ..database import DatabaseManager
 
 
 def ensure_branch_icons() -> str:
@@ -47,72 +60,112 @@ def ensure_branch_icons() -> str:
 
 
 def create_plus_icon(size: int = 15, color_hex: str = "#3b82f6") -> QIcon:
-    """Generate a clean vector plus icon."""
     pixmap = QPixmap(size, size)
     pixmap.fill(Qt.transparent)
-
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-
     pen = QPen(QColor(color_hex), 2.2, Qt.SolidLine, Qt.RoundCap)
     painter.setPen(pen)
-
     mid = size / 2.0
     pad = 2.0
     painter.drawLine(pad, mid, size - pad, mid)
     painter.drawLine(mid, pad, mid, size - pad)
     painter.end()
-
     return QIcon(pixmap)
 
 
 class NavTreeWidget(QTreeWidget):
-    """Custom TreeWidget accepting file drops directly into virtual folders."""
+    """Custom TreeWidget with pinpoint accurate drag-hover tracking and auto-expand."""
 
-    file_dropped = Signal(int, str)  # (file_id, folder_path)
+    file_dropped = Signal(int, int)  # (file_id, target_folder_id)
 
     def __init__(self, sidebar, parent=None):
         super().__init__(parent)
         self.sidebar = sidebar
         self.setAcceptDrops(True)
+        self.saved_selected_item: Optional[QTreeWidgetItem] = None
+        self.drag_hover_item: Optional[QTreeWidgetItem] = None
+
+        self.expand_timer = QTimer(self)
+        self.expand_timer.setSingleShot(True)
+        self.expand_timer.timeout.connect(self._auto_expand_hovered)
+
+    def _auto_expand_hovered(self):
+        if self.drag_hover_item and not self.drag_hover_item.isExpanded():
+            self.drag_hover_item.setExpanded(True)
+
+    def _get_target_item_at(self, pos) -> Optional[QTreeWidgetItem]:
+        """Resolve item under cursor accurately with fallback to global cursor."""
+        item = self.itemAt(pos)
+        if not item:
+            item = self.itemAt(self.viewport().mapFromGlobal(QCursor.pos()))
+        return item
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasFormat("application/x-telecup-file"):
+            self.saved_selected_item = self.currentItem()
             event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent):
         if event.mimeData().hasFormat("application/x-telecup-file"):
-            item = self.itemAt(event.position().toPoint())
-            if item and item.data(0, Qt.UserRole) and item.data(0, Qt.UserRole)[0] == "folder":
-                self.setCurrentItem(item)
+            item = self._get_target_item_at(event.position().toPoint())
+
+            if item and item.data(0, Qt.UserRole) and item.data(0, Qt.UserRole).get("type") == "folder":
+                if self.drag_hover_item != item:
+                    self.drag_hover_item = item
+                    self.setCurrentItem(item)
+                    self.expand_timer.start(500)
                 event.acceptProposedAction()
                 return
+            else:
+                self.drag_hover_item = None
+                self.expand_timer.stop()
+                if self.saved_selected_item:
+                    self.setCurrentItem(self.saved_selected_item)
+
         super().dragMoveEvent(event)
 
+    def dragLeaveEvent(self, event):
+        self.expand_timer.stop()
+        self.drag_hover_item = None
+        if self.saved_selected_item:
+            self.setCurrentItem(self.saved_selected_item)
+        super().dragLeaveEvent(event)
+
     def dropEvent(self, event: QDropEvent):
+        self.expand_timer.stop()
+        target_item = self._get_target_item_at(event.position().toPoint())
+        if not target_item:
+            target_item = self.drag_hover_item
+
+        self.drag_hover_item = None
+
         if event.mimeData().hasFormat("application/x-telecup-file"):
-            item = self.itemAt(event.position().toPoint())
-            if item and item.data(0, Qt.UserRole) and item.data(0, Qt.UserRole)[0] == "folder":
+            if target_item and target_item.data(0, Qt.UserRole) and target_item.data(0, Qt.UserRole).get("type") == "folder":
                 file_id = int(event.mimeData().data("application/x-telecup-file").data().decode("utf-8"))
-                target_path = self.sidebar._get_item_full_path(item)
-                self.file_dropped.emit(file_id, target_path)
+                folder_id = target_item.data(0, Qt.UserRole).get("id")
+                self.file_dropped.emit(file_id, folder_id)
                 event.acceptProposedAction()
                 return
+
+        if self.saved_selected_item:
+            self.setCurrentItem(self.saved_selected_item)
         super().dropEvent(event)
 
 
 class SidebarWidget(QWidget):
-    """Sidebar with nested virtual folders, drag-and-drop receiving, and prominent '+ New' button."""
+    """Sidebar reading and persisting virtual folders directly in SQLite."""
 
     category_selected = Signal(str)
-    folder_selected = Signal(str)
-    file_dropped_on_folder = Signal(int, str)
+    folder_selected = Signal(int, str)
+    file_dropped_on_folder = Signal(int, int)
     sync_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, db: DatabaseManager, parent=None):
         super().__init__(parent)
+        self.db = db
         self.setMinimumWidth(220)
         self.setMaximumWidth(290)
         self.assets_path = ensure_branch_icons()
@@ -123,7 +176,7 @@ class SidebarWidget(QWidget):
         layout.setContentsMargins(14, 16, 14, 16)
         layout.setSpacing(14)
 
-        # ── 1. App Title ──
+        # 1. App Title
         title_label = QLabel("TeleCup")
         title_font = QFont("Segoe UI", 13)
         title_font.setBold(True)
@@ -131,7 +184,7 @@ class SidebarWidget(QWidget):
         title_label.setStyleSheet("color: #e4e4e7; padding: 2px 4px;")
         layout.addWidget(title_label)
 
-        # ── 2. Prominent '+ New' Action Button ──
+        # 2. '+ New' Button
         btn_container = QHBoxLayout()
         btn_container.setContentsMargins(4, 0, 0, 0)
 
@@ -171,7 +224,7 @@ class SidebarWidget(QWidget):
         btn_container.addStretch(1)
         layout.addLayout(btn_container)
 
-        # ── 3. Navigation Tree with Drop Receiving & Persistent Chevrons ──
+        # 3. Tree Widget with High-Contrast Vivid Selection & Drop Target
         self.tree = NavTreeWidget(self, self)
         self.tree.setHeaderHidden(True)
         self.tree.setAnimated(True)
@@ -193,7 +246,7 @@ class SidebarWidget(QWidget):
             }}
             QTreeWidget::item {{
                 height: 28px;
-                padding: 2px 4px;
+                padding: 2px 6px;
                 color: #d4d4d8;
                 border-radius: 4px;
             }}
@@ -201,9 +254,10 @@ class SidebarWidget(QWidget):
                 background-color: #27272a;
                 color: #ffffff;
             }}
+            /* High-visibility active selection & drop target indicator */
             QTreeWidget::item:selected, QTreeWidget::branch:selected {{
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
                 font-weight: 600;
             }}
             QTreeWidget::branch:has-children:!has-siblings:closed,
@@ -227,7 +281,7 @@ class SidebarWidget(QWidget):
         self.tree.itemClicked.connect(self._on_item_clicked)
         layout.addWidget(self.tree)
 
-        self._build_tree()
+        self.reload_tree()
 
     def _setup_new_menu(self):
         self.new_menu = QMenu(self)
@@ -246,8 +300,8 @@ class SidebarWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QMenu::separator {
                 height: 1px;
@@ -270,75 +324,85 @@ class SidebarWidget(QWidget):
 
         self.new_btn.setMenu(self.new_menu)
 
-    def _build_tree(self):
+    def reload_tree(self, select_folder_id: Optional[int] = None):
         self.tree.clear()
 
-        # ── 1. Library Categories ──
         cat_header = QTreeWidgetItem(self.tree, ["CATEGORIES"])
         cat_header.setFlags(Qt.NoItemFlags)
         cat_font = QFont("Segoe UI", 9, QFont.Bold)
         cat_header.setFont(0, cat_font)
         cat_header.setForeground(0, QColor("#71717a"))
 
-        self.item_all = self._add_item(self.tree, "All Files", "category", "all")
-        self._add_item(self.tree, "Documents", "category", "documents")
-        self._add_item(self.tree, "Images & Photos", "category", "images")
-        self._add_item(self.tree, "Media & Audio", "category", "media")
-        self._add_item(self.tree, "Archives", "category", "archives")
-        self._add_item(self.tree, "Favorites", "category", "favorites")
+        self.item_all = self._add_category_item("All Files", "all")
+        self._add_category_item("Documents", "documents")
+        self._add_category_item("Images & Photos", "images")
+        self._add_category_item("Media & Audio", "media")
+        self._add_category_item("Archives", "archives")
+        self._add_category_item("Favorites", "favorites")
 
-        # Spacer
         spacer = QTreeWidgetItem(self.tree, [""])
         spacer.setFlags(Qt.NoItemFlags)
 
-        # ── 2. Virtual Folders ──
         folders_header = QTreeWidgetItem(self.tree, ["VIRTUAL FOLDERS"])
         folders_header.setFlags(Qt.NoItemFlags)
         folders_header.setFont(0, cat_font)
         folders_header.setForeground(0, QColor("#71717a"))
 
-        work = self._add_item(self.tree, "Work Projects", "folder", "Work Projects")
-        sub_2026 = self._add_item(work, "2026", "folder", "Work Projects / 2026")
-        self._add_item(sub_2026, "Q4 Deliverables", "folder", "Work Projects / 2026 / Q4 Deliverables")
-        self._add_item(work, "Client Reviews", "folder", "Work Projects / Client Reviews")
-        work.setExpanded(True)
-        sub_2026.setExpanded(True)
+        db_folders = self.db.get_all_folders()
+        folder_items_map: Dict[int, QTreeWidgetItem] = {}
 
-        finance = self._add_item(self.tree, "Receipts & Finance", "folder", "Receipts & Finance")
-        self._add_item(finance, "Tax 2026", "folder", "Receipts & Finance / Tax 2026")
-        finance.setExpanded(True)
+        for f in db_folders:
+            if f["parent_id"] is None:
+                item = QTreeWidgetItem(self.tree, [f["name"]])
+                item.setData(0, Qt.UserRole, {"type": "folder", "id": f["id"], "name": f["name"]})
+                item.setExpanded(True)
+                folder_items_map[f["id"]] = item
 
-        self._add_item(self.tree, "Learning & E-books", "folder", "Learning & E-books")
+        remaining = [f for f in db_folders if f["parent_id"] is not None]
+        while remaining:
+            placed = False
+            for f in list(remaining):
+                parent_id = f["parent_id"]
+                if parent_id in folder_items_map:
+                    parent_item = folder_items_map[parent_id]
+                    item = QTreeWidgetItem(parent_item, [f["name"]])
+                    item.setData(0, Qt.UserRole, {"type": "folder", "id": f["id"], "name": f["name"]})
+                    item.setExpanded(True)
+                    folder_items_map[f["id"]] = item
+                    remaining.remove(f)
+                    placed = True
+            if not placed:
+                break
 
-        self.tree.setCurrentItem(self.item_all)
+        if select_folder_id and select_folder_id in folder_items_map:
+            self.tree.setCurrentItem(folder_items_map[select_folder_id])
+        else:
+            self.tree.setCurrentItem(self.item_all)
 
-    def _add_item(self, parent, title: str, item_type: str, path_val: str) -> QTreeWidgetItem:
-        item = QTreeWidgetItem(parent, [title])
-        item.setData(0, Qt.UserRole, (item_type, path_val))
+    def _add_category_item(self, title: str, category_key: str) -> QTreeWidgetItem:
+        item = QTreeWidgetItem(self.tree, [title])
+        item.setData(0, Qt.UserRole, {"type": "category", "key": category_key})
         return item
 
     def _get_item_full_path(self, item: QTreeWidgetItem) -> str:
         data = item.data(0, Qt.UserRole)
-        if not data:
+        if not data or data.get("type") != "folder":
             return ""
-        item_type, val = data
-        if item_type != "folder":
-            return val
 
         parts = [item.text(0)]
         curr = item.parent()
         while curr:
             curr_data = curr.data(0, Qt.UserRole)
-            if curr_data and curr_data[0] == "folder":
+            if curr_data and curr_data.get("type") == "folder":
                 parts.insert(0, curr.text(0))
             curr = curr.parent()
 
         return " / ".join(parts)
 
-    def select_by_path(self, target_path: str):
+    def select_folder_by_id(self, folder_id: int):
         def search(item):
             data = item.data(0, Qt.UserRole)
-            if data and (data[1] == target_path or self._get_item_full_path(item) == target_path):
+            if data and data.get("type") == "folder" and data.get("id") == folder_id:
                 self.tree.setCurrentItem(item)
                 return True
             for i in range(item.childCount()):
@@ -350,36 +414,44 @@ class SidebarWidget(QWidget):
             if search(self.tree.topLevelItem(i)):
                 break
 
+    def select_category_by_key(self, cat_key: str):
+        for i in range(self.tree.topLevelItemCount()):
+            item = self.tree.topLevelItem(i)
+            data = item.data(0, Qt.UserRole)
+            if data and data.get("type") == "category" and data.get("key") == cat_key:
+                self.tree.setCurrentItem(item)
+                break
+
     def _on_item_clicked(self, item: QTreeWidgetItem, column: int):
         data = item.data(0, Qt.UserRole)
         if not data:
             return
-        item_type, val = data
-        if item_type == "category":
-            self.category_selected.emit(val)
-        elif item_type == "folder":
+        if data["type"] == "category":
+            self.category_selected.emit(data["key"])
+        elif data["type"] == "folder":
             full_path = self._get_item_full_path(item)
-            self.folder_selected.emit(full_path)
+            self.folder_selected.emit(data["id"], full_path)
 
-    def _create_folder(self, parent_item=None):
-        prompt_target = parent_item.text(0) if parent_item else "root"
+    def _create_folder(self, parent_item: Optional[QTreeWidgetItem] = None):
+        parent_id = None
+        prompt_target = "root"
+        if parent_item:
+            parent_data = parent_item.data(0, Qt.UserRole)
+            parent_id = parent_data.get("id")
+            prompt_target = parent_item.text(0)
+
         folder_name, ok = QInputDialog.getText(
             self, "New Folder", f"Enter folder name (inside {prompt_target}):"
         )
         if ok and folder_name.strip():
-            target_parent = parent_item if parent_item else self.tree
-            parent_path = self._get_item_full_path(parent_item) if parent_item else ""
-            full_path = f"{parent_path} / {folder_name.strip()}" if parent_path else folder_name.strip()
-
-            new_item = self._add_item(target_parent, folder_name.strip(), "folder", full_path)
-            if parent_item:
-                parent_item.setExpanded(True)
-            self.tree.setCurrentItem(new_item)
-            self.folder_selected.emit(full_path)
+            new_id = self.db.add_folder(folder_name.strip(), parent_id)
+            self.reload_tree(select_folder_id=new_id)
+            full_path = self.db.get_folder_path(new_id)
+            self.folder_selected.emit(new_id, full_path)
 
     def _create_subfolder_for_current(self):
         curr = self.tree.currentItem()
-        if curr and curr.data(0, Qt.UserRole) and curr.data(0, Qt.UserRole)[0] == "folder":
+        if curr and curr.data(0, Qt.UserRole) and curr.data(0, Qt.UserRole).get("type") == "folder":
             self._create_folder(curr)
         else:
             QMessageBox.information(
@@ -391,8 +463,11 @@ class SidebarWidget(QWidget):
         if not item:
             return
         data = item.data(0, Qt.UserRole)
-        if not data or data[0] != "folder":
+        if not data or data.get("type") != "folder":
             return
+
+        folder_id = data["id"]
+        folder_name = item.text(0)
 
         menu = QMenu(self)
         menu.setStyleSheet(
@@ -410,8 +485,8 @@ class SidebarWidget(QWidget):
                 border-radius: 4px;
             }
             QMenu::item:selected {
-                background-color: #1e293b;
-                color: #60a5fa;
+                background-color: #2563eb;
+                color: #ffffff;
             }
             QMenu::separator {
                 height: 1px;
@@ -431,26 +506,21 @@ class SidebarWidget(QWidget):
             self._create_folder(item)
         elif action == rename_action:
             new_name, ok = QInputDialog.getText(
-                self, "Rename Folder", "Enter new folder name:", text=item.text(0)
+                self, "Rename Folder", "Enter new folder name:", text=folder_name
             )
             if ok and new_name.strip():
-                item.setText(0, new_name.strip())
-                full_path = self._get_item_full_path(item)
-                self.folder_selected.emit(full_path)
+                self.db.rename_folder(folder_id, new_name.strip())
+                self.reload_tree(select_folder_id=folder_id)
+                full_path = self.db.get_folder_path(folder_id)
+                self.folder_selected.emit(folder_id, full_path)
         elif action == delete_action:
             confirm = QMessageBox.question(
                 self,
                 "Delete Folder",
-                f"Delete folder '{item.text(0)}' and its contents?",
+                f"Delete folder '{folder_name}' and all subfolders? Files will remain in vault.",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if confirm == QMessageBox.Yes:
-                parent = item.parent()
-                if parent:
-                    parent.removeChild(item)
-                else:
-                    idx = self.tree.indexOfTopLevelItem(item)
-                    if idx >= 0:
-                        self.tree.takeTopLevelItem(idx)
-                self.tree.setCurrentItem(self.item_all)
+                self.db.delete_folder(folder_id)
+                self.reload_tree()
                 self.category_selected.emit("all")
