@@ -1,4 +1,4 @@
-"""Main application window connecting SQLite Database to PySide6 UI."""
+"""Main application window connecting SQLite Database, Telethon Client, and UI."""
 
 from typing import Optional
 from PySide6.QtWidgets import (
@@ -10,16 +10,40 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 
 from ..database import DatabaseManager
+from ..telegram_client import TelegramManager
 from .sidebar import SidebarWidget
 from .toolbar import ToolbarWidget
 from .file_grid import FileGridWidget
+from .dialogs import TelegramLoginDialog
+
+
+class CheckAuthWorker(QThread):
+    """Background check on startup to determine if Telegram session is already authenticated."""
+
+    auth_checked = Signal(bool, dict)
+
+    def __init__(self, tg: TelegramManager):
+        super().__init__()
+        self.tg = tg
+
+    def run(self):
+        try:
+            is_auth = self.tg.is_authorized()
+            user_info = {}
+            if is_auth:
+                info = self.tg.get_me_info()
+                if info:
+                    user_info = info
+            self.auth_checked.emit(is_auth, user_info)
+        except Exception:
+            self.auth_checked.emit(False, {})
 
 
 class MainWindow(QMainWindow):
-    """Main window coordinating SQLite database with UI widgets."""
+    """Main window coordinating SQLite database and Telegram client with UI widgets."""
 
     def __init__(self):
         super().__init__()
@@ -27,8 +51,11 @@ class MainWindow(QMainWindow):
         self.resize(1160, 720)
         self.setMinimumSize(900, 560)
 
-        # 1. Initialize SQLite Database
+        # 1. Initialize Database & Telegram Client
         self.db = DatabaseManager()
+        self.tg = TelegramManager()
+        self.tg_user_info: Optional[dict] = None
+        self.is_tg_connected: bool = False
 
         # 2. State Tracking
         self.current_category: Optional[str] = "all"
@@ -41,8 +68,9 @@ class MainWindow(QMainWindow):
         self._init_ui()
         self._connect_signals()
 
-        # 4. Initial Load from SQLite
+        # 4. Initial Load
         self._refresh_vault()
+        self._check_telegram_status_on_startup()
 
     def _init_ui(self):
         self.setStyleSheet(
@@ -116,8 +144,8 @@ class MainWindow(QMainWindow):
         self.status_label.setStyleSheet("color: #a1a1aa;")
         self.status_bar.addWidget(self.status_label)
 
-        self.sync_status_label = QLabel("Database: SQLite Connected")
-        self.sync_status_label.setStyleSheet("color: #3b82f6; font-weight: 500; margin-right: 12px;")
+        self.sync_status_label = QLabel("Telegram: Checking session...")
+        self.sync_status_label.setStyleSheet("color: #94a3b8; font-weight: 500; margin-right: 12px;")
         self.status_bar.addPermanentWidget(self.sync_status_label)
 
     def _connect_signals(self):
@@ -140,15 +168,56 @@ class MainWindow(QMainWindow):
         self.toolbar.sort_changed.connect(self._on_sort_changed)
         self.toolbar.sync_requested.connect(self._on_sync_requested)
 
+    # ── Telegram Status Checking ──
+
+    def _check_telegram_status_on_startup(self):
+        self.auth_checker = CheckAuthWorker(self.tg)
+        self.auth_checker.auth_checked.connect(self._on_auth_checked)
+        self.auth_checker.start()
+
+    def _on_auth_checked(self, is_auth: bool, user_info: dict):
+        self.is_tg_connected = is_auth
+        self.tg_user_info = user_info
+        if is_auth and user_info:
+            handle = f"@{user_info['username']}" if user_info.get("username") else user_info.get("first_name", "User")
+            self.sync_status_label.setStyleSheet("color: #3b82f6; font-weight: 600; margin-right: 12px;")
+            self.sync_status_label.setText(f"Telegram: Connected ({handle})")
+        else:
+            self.sync_status_label.setStyleSheet("color: #a1a1aa; font-weight: 500; margin-right: 12px;")
+            self.sync_status_label.setText("Telegram: Not Linked (Click Sync to Login)")
+
+    # ── Synchronization & Login Trigger ──
+
+    def _on_sync_requested(self):
+        if not self.is_tg_connected:
+            dialog = TelegramLoginDialog(self.tg, self)
+            dialog.login_successful.connect(self._on_login_completed)
+            dialog.exec()
+        else:
+            handle = f"@{self.tg_user_info['username']}" if self.tg_user_info.get("username") else self.tg_user_info.get("first_name", "User")
+            QMessageBox.information(
+                self,
+                "Telegram Connected",
+                f"Sesi aktif terhubung ke akun:\n<b>{handle}</b> (ID: {self.tg_user_info.get('id')})\n\n"
+                "Koneksi MTProto berhasil diverifikasi!\n"
+                "Di Langkah 5, sistem akan mulai membaca dan mengunduh berkas dari Saved Messages Anda.",
+            )
+
+    def _on_login_completed(self, user_info: dict):
+        self.is_tg_connected = True
+        self.tg_user_info = user_info
+        handle = f"@{user_info['username']}" if user_info.get("username") else user_info.get("first_name", "User")
+        self.sync_status_label.setStyleSheet("color: #3b82f6; font-weight: 600; margin-right: 12px;")
+        self.sync_status_label.setText(f"Telegram: Connected ({handle})")
+
+    # ── Database Vault Refresh ──
+
     def _refresh_vault(self):
-        """Query SQLite database for child folders AND files, then refresh display."""
-        # Query child folders if currently viewing a folder
         subfolders = []
         if not self.current_search:
             if self.current_folder_id is not None:
                 subfolders = self.db.get_subfolders(self.current_folder_id)
 
-        # Query files
         files = self.db.get_files(
             category=self.current_category,
             folder_id=self.current_folder_id,
@@ -158,7 +227,6 @@ class MainWindow(QMainWindow):
 
         self.file_grid.set_data(subfolders, files)
 
-        # Update Status Bar Text
         summary = []
         if subfolders:
             summary.append(f"{len(subfolders)} folder(s)")
@@ -189,7 +257,6 @@ class MainWindow(QMainWindow):
         self._refresh_vault()
 
     def _on_folder_navigated_from_grid(self, folder_id: int, full_path: str):
-        """User double clicked a child folder card in the main view."""
         self.sidebar.select_folder_by_id(folder_id)
         self._on_folder_selected(folder_id, full_path)
 
@@ -235,12 +302,3 @@ class MainWindow(QMainWindow):
                     self.sidebar.select_folder_by_id(f["id"])
                     self._on_folder_selected(f["id"], path_val)
                     break
-
-    def _on_sync_requested(self):
-        QMessageBox.information(
-            self,
-            "Sync Telegram",
-            "Telegram sync requested.\n\n"
-            "Database SQLite (storage/vault.db) sudah aktif dan siap menampung data.\n"
-            "Di Langkah 4, modul telethon akan dihubungkan untuk menyinkronkan Saved Messages secara riil.",
-        )
