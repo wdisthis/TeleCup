@@ -399,6 +399,50 @@ class DatabaseManager:
             conn.commit()
             return cursor.lastrowid
 
+    # ── Message CRUD ──
+
+    def save_message(
+        self,
+        msg_id: int,
+        chat_id: Optional[int],
+        date_str: str,
+        text: str,
+        sender_name: Optional[str] = "",
+    ):
+        """Insert or update a Telegram message record."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO messages (id, chat_id, date, text, sender_name)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    date = excluded.date,
+                    text = excluded.text,
+                    sender_name = excluded.sender_name;
+                """,
+                (msg_id, chat_id, date_str, text, sender_name)
+            )
+            conn.commit()
+
+    def get_file_by_msg_id(self, telegram_msg_id: int) -> Optional[Dict[str, Any]]:
+        """Find an existing file record by its Telegram message ID."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM files WHERE telegram_msg_id = ?;", (telegram_msg_id,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+    def get_file_by_sha256(self, sha256: str) -> Optional[Dict[str, Any]]:
+        """Find an existing file record by its SHA-256 hash."""
+        if not sha256:
+            return None
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM files WHERE sha256 = ?;", (sha256,))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
     # ── Sync State ──
 
     def get_sync_state(self, key: str) -> Optional[str]:
@@ -417,3 +461,12 @@ class DatabaseManager:
                 (key, value)
             )
             conn.commit()
+
+    def get_last_synced_msg_id(self) -> int:
+        """Get the highest Telegram message ID synced so far."""
+        val = self.get_sync_state("last_synced_msg_id")
+        return int(val) if val and val.isdigit() else 0
+
+    def set_last_synced_msg_id(self, msg_id: int):
+        """Save the highest Telegram message ID synced."""
+        self.set_sync_state("last_synced_msg_id", str(msg_id))

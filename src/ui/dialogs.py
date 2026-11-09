@@ -11,12 +11,16 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QWidget,
     QMessageBox,
+    QProgressBar,
+    QFrame,
 )
 from PySide6.QtCore import Qt, Signal, QThread
 from PySide6.QtGui import QFont
 
 from telethon.errors import SessionPasswordNeededError
 from ..telegram_client import TelegramManager
+from ..database import DatabaseManager
+from ..sync_service import SyncService
 
 
 class AsyncAuthWorker(QThread):
@@ -322,7 +326,7 @@ class TelegramLoginDialog(QDialog):
 
     def _set_loading(self, msg: str):
         self.status_msg_label.setStyleSheet("font-size: 12px; color: #60a5fa;")
-        self.status_msg_label.setText(f"⏳  {msg}")
+        self.status_msg_label.setText(f"[Loading] {msg}")
 
     def _set_error(self, err_msg: str):
         self.status_msg_label.setStyleSheet("font-size: 12px; color: #ef4444; font-weight: 500;")
@@ -330,3 +334,282 @@ class TelegramLoginDialog(QDialog):
 
     def _clear_status(self):
         self.status_msg_label.setText("")
+
+
+class SyncWorker(QThread):
+    """Background worker thread executing incremental Telegram synchronization."""
+
+    progress_updated = Signal(dict)
+    finished_signal = Signal(dict)
+    error_signal = Signal(str)
+
+    def __init__(self, sync_service: SyncService, limit: Optional[int] = None):
+        super().__init__()
+        self.sync_service = sync_service
+        self.limit = limit
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        try:
+            stats = self.sync_service.sync_saved_messages(
+                progress_callback=self._on_progress,
+                is_cancelled_callback=lambda: self._is_cancelled,
+                limit=self.limit,
+            )
+            self.finished_signal.emit(stats)
+        except Exception as e:
+            self.error_signal.emit(str(e))
+
+    def _on_progress(self, data: dict):
+        self.progress_updated.emit(data)
+
+
+class SyncProgressDialog(QDialog):
+    """Modern dark-themed progress dialog for Telegram Saved Messages synchronization."""
+
+    sync_completed = Signal()
+
+    def __init__(self, sync_service: SyncService, parent=None, limit: Optional[int] = None):
+        super().__init__(parent)
+        self.sync_service = sync_service
+        self.limit = limit
+        self.worker: Optional[SyncWorker] = None
+        self.has_finished: bool = False
+
+        self.setWindowTitle("Sync Saved Messages - TeleCup")
+        self.setFixedSize(540, 390)
+        self.setModal(True)
+
+        self._init_ui()
+        self._start_sync()
+
+    def _init_ui(self):
+        self.setStyleSheet(
+            """
+            QDialog {
+                background-color: #18181b;
+                color: #e4e4e7;
+            }
+            QLabel {
+                color: #e4e4e7;
+            }
+            QProgressBar {
+                background-color: #27272a;
+                border: 1px solid #3f3f46;
+                border-radius: 6px;
+                height: 18px;
+                text-align: center;
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 600;
+            }
+            QProgressBar::chunk {
+                background-color: #2563eb;
+                border-radius: 5px;
+            }
+            QPushButton {
+                border-radius: 6px;
+                padding: 9px 20px;
+                font-size: 13px;
+                font-weight: 600;
+            }
+            """
+        )
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 22, 24, 22)
+        root.setSpacing(14)
+
+        # 1. Header
+        title = QLabel("Synchronizing Saved Messages")
+        title_font = QFont("Segoe UI", 14, QFont.Bold)
+        title.setFont(title_font)
+        title.setStyleSheet("color: #ffffff;")
+        root.addWidget(title)
+
+        desc = QLabel(
+            "TeleCup is scanning your Saved Messages, downloading attachments to local disk, "
+            "and cataloging metadata in your vault."
+        )
+        desc.setWordWrap(True)
+        desc.setStyleSheet("color: #a1a1aa; font-size: 12px; margin-bottom: 4px;")
+        root.addWidget(desc)
+
+        # 2. Status & Filename
+        self.status_label = QLabel("Initializing connection to Telegram MTProto...")
+        self.status_label.setStyleSheet("color: #60a5fa; font-weight: 600; font-size: 12px;")
+        root.addWidget(self.status_label)
+
+        self.filename_label = QLabel("")
+        self.filename_label.setStyleSheet("color: #f4f4f5; font-size: 12px;")
+        root.addWidget(self.filename_label)
+
+        # 3. Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        root.addWidget(self.progress_bar)
+
+        # 4. Metrics Box
+        stats_frame = QFrame()
+        stats_frame.setStyleSheet(
+            """
+            QFrame {
+                background-color: #202024;
+                border: 1px solid #333338;
+                border-radius: 8px;
+                padding: 10px;
+            }
+            """
+        )
+        stats_layout = QGridLayout(stats_frame)
+        stats_layout.setContentsMargins(12, 10, 12, 10)
+        stats_layout.setHorizontalSpacing(24)
+        stats_layout.setVerticalSpacing(8)
+
+        lbl_scanned = QLabel("Messages Scanned:")
+        lbl_scanned.setStyleSheet("color: #a1a1aa; font-size: 11px;")
+        self.val_scanned = QLabel("0")
+        self.val_scanned.setStyleSheet("color: #ffffff; font-weight: 600; font-size: 12px;")
+
+        lbl_detected = QLabel("Files Detected:")
+        lbl_detected.setStyleSheet("color: #a1a1aa; font-size: 11px;")
+        self.val_detected = QLabel("0")
+        self.val_detected.setStyleSheet("color: #ffffff; font-weight: 600; font-size: 12px;")
+
+        lbl_synced = QLabel("Files Downloaded:")
+        lbl_synced.setStyleSheet("color: #a1a1aa; font-size: 11px;")
+        self.val_synced = QLabel("0")
+        self.val_synced.setStyleSheet("color: #3b82f6; font-weight: 600; font-size: 12px;")
+
+        lbl_skipped = QLabel("Already Up-to-Date:")
+        lbl_skipped.setStyleSheet("color: #a1a1aa; font-size: 11px;")
+        self.val_skipped = QLabel("0")
+        self.val_skipped.setStyleSheet("color: #10b981; font-weight: 600; font-size: 12px;")
+
+        stats_layout.addWidget(lbl_scanned, 0, 0)
+        stats_layout.addWidget(self.val_scanned, 0, 1)
+        stats_layout.addWidget(lbl_detected, 0, 2)
+        stats_layout.addWidget(self.val_detected, 0, 3)
+
+        stats_layout.addWidget(lbl_synced, 1, 0)
+        stats_layout.addWidget(self.val_synced, 1, 1)
+        stats_layout.addWidget(lbl_skipped, 1, 2)
+        stats_layout.addWidget(self.val_skipped, 1, 3)
+
+        root.addWidget(stats_frame)
+        root.addStretch(1)
+
+        # 5. Buttons Row
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(10)
+
+        self.cancel_btn = QPushButton("Stop Sync")
+        self.cancel_btn.setCursor(Qt.PointingHandCursor)
+        self.cancel_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #27272a;
+                border: 1px solid #3f3f46;
+                color: #ef4444;
+            }
+            QPushButton:hover {
+                background-color: #3f3f46;
+                color: #f87171;
+            }
+            """
+        )
+        self.cancel_btn.clicked.connect(self._on_cancel_clicked)
+
+        self.close_btn = QPushButton("Done")
+        self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setEnabled(False)
+        self.close_btn.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #2563eb;
+                color: #ffffff;
+                border: none;
+            }
+            QPushButton:hover {
+                background-color: #1d4ed8;
+            }
+            QPushButton:disabled {
+                background-color: #3f3f46;
+                color: #71717a;
+            }
+            """
+        )
+        self.close_btn.clicked.connect(self.accept)
+
+        btn_layout.addStretch(1)
+        btn_layout.addWidget(self.cancel_btn)
+        btn_layout.addWidget(self.close_btn)
+        root.addLayout(btn_layout)
+
+    def _start_sync(self):
+        self.worker = SyncWorker(self.sync_service, limit=self.limit)
+        self.worker.progress_updated.connect(self._on_progress_updated)
+        self.worker.finished_signal.connect(self._on_sync_finished)
+        self.worker.error_signal.connect(self._on_sync_error)
+        self.worker.start()
+
+    def _on_progress_updated(self, data: dict):
+        phase = data.get("phase", "")
+        msg = data.get("message", "")
+        self.status_label.setText(msg)
+
+        if "filename" in data:
+            self.filename_label.setText(data["filename"])
+
+        if "current_bytes" in data and "total_bytes" in data:
+            tot = data["total_bytes"]
+            cur = data["current_bytes"]
+            if tot > 0:
+                pct = int((cur / tot) * 100)
+                self.progress_bar.setValue(min(100, max(0, pct)))
+
+        stats = data.get("stats", {})
+        if stats:
+            self.val_scanned.setText(str(stats.get("scanned_messages", 0)))
+            self.val_detected.setText(str(stats.get("total_files_found", 0)))
+            self.val_synced.setText(str(stats.get("synced_files", 0)))
+            self.val_skipped.setText(str(stats.get("skipped_files", 0)))
+
+        if phase == "completed":
+            self._finalize_sync("Sync completed successfully.")
+        elif phase == "cancelled":
+            self._finalize_sync("Sync stopped by user.")
+
+    def _on_sync_finished(self, stats: dict):
+        self._finalize_sync("Sync finished.")
+
+    def _on_sync_error(self, err_msg: str):
+        self.status_label.setStyleSheet("color: #ef4444; font-weight: 600; font-size: 12px;")
+        self.status_label.setText(f"Sync error: {err_msg}")
+        self._finalize_sync("Sync interrupted with error.")
+
+    def _on_cancel_clicked(self):
+        if self.worker and self.worker.isRunning():
+            self.status_label.setText("Stopping sync...")
+            self.cancel_btn.setEnabled(False)
+            self.worker.cancel()
+        else:
+            self.reject()
+
+    def _finalize_sync(self, final_text: str):
+        self.has_finished = True
+        self.status_label.setText(final_text)
+        self.progress_bar.setValue(100)
+        self.cancel_btn.setEnabled(False)
+        self.close_btn.setEnabled(True)
+        self.sync_completed.emit()
+
+    def closeEvent(self, event):
+        if self.worker and self.worker.isRunning():
+            self.worker.cancel()
+            self.worker.wait(1500)
+        super().closeEvent(event)

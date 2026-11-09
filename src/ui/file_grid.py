@@ -1,5 +1,8 @@
 """Responsive file and folder grid with compact drag preview, Google Drive folder cards, and drop highlight."""
 
+import os
+import subprocess
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 from PySide6.QtWidgets import (
     QWidget,
@@ -614,6 +617,30 @@ class FileGridWidget(QWidget):
             card.card_context_menu.connect(self._on_card_context_menu)
             self.card_widgets.append(card)
 
+        if not self.displayed_folders and not self.displayed_files:
+            empty_box = QWidget()
+            empty_box_layout = QVBoxLayout(empty_box)
+            empty_box_layout.setContentsMargins(0, 90, 0, 90)
+            empty_box_layout.setSpacing(8)
+            empty_box_layout.setAlignment(Qt.AlignCenter)
+
+            title_lbl = QLabel("Belum Ada Berkas di Tampilan Ini")
+            title_lbl.setStyleSheet("color: #71717a; font-size: 14px; font-weight: 600; background: transparent;")
+            title_lbl.setAlignment(Qt.AlignCenter)
+
+            desc_lbl = QLabel(
+                "Folder ini masih kosong, atau berkas belum disinkronkan dari Telegram.\n"
+                "Klik tombol 'Sync Telegram' di toolbar atas untuk mengunduh berkas dari Saved Messages."
+            )
+            desc_lbl.setStyleSheet("color: #52525b; font-size: 12px; line-height: 1.4; background: transparent;")
+            desc_lbl.setAlignment(Qt.AlignCenter)
+
+            empty_box_layout.addWidget(title_lbl)
+            empty_box_layout.addWidget(desc_lbl)
+
+            self.grid_layout.addWidget(empty_box, 0, 0, 1, 1)
+            self.header_widgets.append(empty_box)
+
         self._recalculate_grid_columns()
 
         total_rows = len(self.displayed_folders) + len(self.displayed_files)
@@ -671,7 +698,7 @@ class FileGridWidget(QWidget):
 
     def _on_card_double_click(self, file_data: dict):
         self.file_opened.emit(file_data)
-        self._show_info(file_data)
+        self._open_file_locally(file_data)
 
     def _on_card_context_menu(self, file_data: dict, global_pos: QPoint):
         self._on_card_clicked(file_data)
@@ -690,7 +717,7 @@ class FileGridWidget(QWidget):
         else:
             file_data = u_data["data"]
             self.file_opened.emit(file_data)
-            self._show_info(file_data)
+            self._open_file_locally(file_data)
 
     def _open_table_context_menu(self, pos):
         item = self.list_view.item(self.list_view.currentRow(), 0)
@@ -698,6 +725,37 @@ class FileGridWidget(QWidget):
             u_data = item.data(Qt.UserRole)
             if u_data and u_data["type"] == "file":
                 self._show_context_menu(u_data["data"], self.list_view.viewport().mapToGlobal(pos))
+
+    def _open_file_locally(self, file_data: dict):
+        """Open the physical file with the default Windows application."""
+        local_path = file_data.get("local_path")
+        if local_path and os.path.exists(local_path):
+            try:
+                os.startfile(os.path.abspath(local_path))
+            except Exception as e:
+                QMessageBox.warning(
+                    self,
+                    "Open Error",
+                    f"Gagal membuka berkas:\n{file_data.get('name')}\n\nPesan: {str(e)}"
+                )
+        else:
+            QMessageBox.information(
+                self,
+                "File Belum Diunduh",
+                f"Berkas '{file_data.get('name')}' belum tersimpan di harddisk komputer Anda.\n\n"
+                "Klik tombol 'Sync Telegram' di toolbar atas untuk mengunduh berkas dari Saved Messages."
+            )
+
+    def _show_in_explorer(self, file_data: dict):
+        """Highlight and select the file in Windows File Explorer."""
+        local_path = file_data.get("local_path")
+        if local_path and os.path.exists(local_path):
+            norm_path = os.path.normpath(os.path.abspath(local_path))
+            subprocess.Popen(["explorer", f"/select,{norm_path}"])
+        else:
+            fallback_dir = Path(__file__).resolve().parent.parent.parent / "storage" / "files"
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.Popen(["explorer", str(fallback_dir)])
 
     def _show_context_menu(self, file_data: dict, global_pos: QPoint):
         menu = QMenu(self)
@@ -725,9 +783,11 @@ class FileGridWidget(QWidget):
             }
             """
         )
-        open_action = menu.addAction("Open / Preview")
-        show_action = menu.addAction("Show in Explorer")
+        open_action = menu.addAction("Open with Default App")
+        show_action = menu.addAction("Show in File Explorer")
+        details_action = menu.addAction("Properties / Info")
         
+        menu.addSeparator()
         fav_label = "Remove from Favorites" if file_data.get("is_fav") else "Add to Favorites"
         fav_action = menu.addAction(fav_label)
         
@@ -736,6 +796,10 @@ class FileGridWidget(QWidget):
 
         action = menu.exec(global_pos)
         if action == open_action:
+            self._open_file_locally(file_data)
+        elif action == show_action:
+            self._show_in_explorer(file_data)
+        elif action == details_action:
             self._show_info(file_data)
         elif action == fav_action:
             self.toggle_favorite_requested.emit(file_data["id"])
@@ -751,10 +815,18 @@ class FileGridWidget(QWidget):
 
     def _show_info(self, file_data: dict):
         folder_display = file_data.get("folder") or "Unassigned"
+        local_display = file_data.get("local_path") or "Not yet downloaded"
+        msg_ref = file_data.get("message") or "-"
         QMessageBox.information(
             self,
-            "File Details",
-            f"File: {file_data['name']}\nSize: {file_data['size_str']}\nTelegram Ref: {file_data.get('message', '-')}\nFolder: {folder_display}\n\n(Local file preview & open will be connected in Step 4)",
+            "File Properties",
+            f"File Name: {file_data.get('name')}\n"
+            f"Category: {file_data.get('category', '').capitalize()}\n"
+            f"Size: {file_data.get('size_str')}\n"
+            f"Date: {file_data.get('date_added', file_data.get('date', '-'))}\n"
+            f"Virtual Folder: {folder_display}\n"
+            f"Telegram Caption: {msg_ref}\n"
+            f"Local Path: {local_display}",
         )
 
     def update_breadcrumb(self, item_type: str, val: str, extra_label: str = None):

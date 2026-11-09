@@ -14,10 +14,11 @@ from PySide6.QtCore import Qt, QThread, Signal
 
 from ..database import DatabaseManager
 from ..telegram_client import TelegramManager
+from ..sync_service import SyncService
 from .sidebar import SidebarWidget
 from .toolbar import ToolbarWidget
 from .file_grid import FileGridWidget
-from .dialogs import TelegramLoginDialog
+from .dialogs import TelegramLoginDialog, SyncProgressDialog
 
 
 class CheckAuthWorker(QThread):
@@ -54,6 +55,7 @@ class MainWindow(QMainWindow):
         # 1. Initialize Database & Telegram Client
         self.db = DatabaseManager()
         self.tg = TelegramManager()
+        self.sync_service = SyncService(self.db, self.tg)
         self.tg_user_info: Optional[dict] = None
         self.is_tg_connected: bool = False
 
@@ -194,14 +196,17 @@ class MainWindow(QMainWindow):
             dialog.login_successful.connect(self._on_login_completed)
             dialog.exec()
         else:
-            handle = f"@{self.tg_user_info['username']}" if self.tg_user_info.get("username") else self.tg_user_info.get("first_name", "User")
-            QMessageBox.information(
-                self,
-                "Telegram Connected",
-                f"Sesi aktif terhubung ke akun:\n<b>{handle}</b> (ID: {self.tg_user_info.get('id')})\n\n"
-                "Koneksi MTProto berhasil diverifikasi!\n"
-                "Di Langkah 5, sistem akan mulai membaca dan mengunduh berkas dari Saved Messages Anda.",
-            )
+            self._launch_sync_dialog()
+
+    def _launch_sync_dialog(self):
+        dialog = SyncProgressDialog(self.sync_service, self)
+        dialog.sync_completed.connect(self._on_sync_dialog_completed)
+        dialog.exec()
+        self._refresh_vault()
+
+    def _on_sync_dialog_completed(self):
+        self._refresh_vault()
+        self.status_label.setText("Sinkronisasi berkas Saved Messages selesai.")
 
     def _on_login_completed(self, user_info: dict):
         self.is_tg_connected = True
@@ -209,6 +214,7 @@ class MainWindow(QMainWindow):
         handle = f"@{user_info['username']}" if user_info.get("username") else user_info.get("first_name", "User")
         self.sync_status_label.setStyleSheet("color: #3b82f6; font-weight: 600; margin-right: 12px;")
         self.sync_status_label.setText(f"Telegram: Connected ({handle})")
+        self._launch_sync_dialog()
 
     # ── Database Vault Refresh ──
 
